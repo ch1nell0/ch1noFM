@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Local MP3 Radio</title>
+    <title>JulyFM - Web Radio Direct Stream</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,7 +41,7 @@
 
     <div class="main-container">
         <div class="player-card">
-            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA STREAM AUDIO RADIO</button>
+            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA AUDIO RADIO</button>
 
             <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
             <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
@@ -50,7 +50,7 @@
             <div id="song-artist" class="song-artist">Radio online</div>
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
-            <!-- PLAYER MP3 NATIVO PER TUTTO -->
+            <!-- LETTORE AUDIO NATIVO SENZA IFRAME -->
             <audio id="radio-player" controls autoplay></audio>
 
             <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
@@ -66,7 +66,7 @@
         <div class="request-card">
             <div style="margin-bottom: 10px; font-weight: 700;">🎵 Richiedi una Canzone</div>
             <div class="form-group">
-                <label>Link (YouTube, SoundCloud, o MP3):</label>
+                <label>Link (YouTube, SoundCloud, MP3):</label>
                 <input type="text" id="song-link" placeholder="Incolla l'URL qui...">
             </div>
             <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
@@ -74,7 +74,7 @@
                 <label>Carica File Audio da PC:</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
-            <button class="submit-btn" onclick="handleFormSubmit()">Invia e Converti in MP3</button>
+            <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
             <div id="status-msg"></div>
         </div>
     </div>
@@ -102,69 +102,84 @@
             document.getElementById("enable-audio-btn").style.color = "#fff";
         }
 
-        // FUNZIONE PER CARICARE QUALSIASI FILE SU CATBOX/LITTERBOX
-        async function uploadToLitterbox(fileOrBlob, filename = "song.mp3") {
+        // CARICAMENTO FILE DA PC SU CATBOX (Utilizza FormData standard per evitare NetworkError)
+        async function uploadToLitterbox(file) {
             const formData = new FormData();
             formData.append("reqtype", "fileupload");
             formData.append("time", "1h");
-            formData.append("fileToUpload", fileOrBlob, filename);
+            formData.append("fileToUpload", file);
 
             const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
                 method: "POST",
                 body: formData
             });
+            if (!res.ok) throw new Error("Errore durante il caricamento del file.");
             return await res.text();
         }
 
-        // PRENDE UN LINK, LO CONVERTE IN MP3 E LO CARICA SU CATBOX COME FILE MP3 REALE
-        async function convertLinkAndUploadToCatbox(link) {
+        // PROXY ANTI-CORS PER CHIAMATE SICURE
+        const CORS_PROXY = "https://corsproxy.io/?";
+
+        async function processLink(link) {
             let title = "Traccia Audio";
             let artist = "Artista";
             let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=Audio";
 
-            // 1. Estrazione metadati
             if (link.includes("soundcloud.com")) {
-                const scRes = await fetch(`https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(link)}`);
+                const scRes = await fetch(`${CORS_PROXY}${encodeURIComponent(`https://soundcloud.com/oembed?format=json&url=${link}`)}`);
                 const scData = await scRes.json();
                 title = scData.title || title;
                 artist = scData.author_name || "SoundCloud";
                 coverUrl = scData.thumbnail_url || coverUrl;
+
+                // Estrazione audio tramite Invidious/Cobalt sicuro via proxy
+                const apiRes = await fetch("https://api.cobalt.tools/api/json", {
+                    method: "POST",
+                    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: link, downloadMode: "audio" })
+                });
+                const apiData = await apiRes.json();
+
+                return {
+                    audioUrl: apiData.url || link,
+                    title: title,
+                    artist: artist,
+                    coverUrl: coverUrl,
+                    duration: 240
+                };
+
             } else if (link.includes("youtube.com") || link.includes("youtu.be")) {
                 const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
                 const match = link.match(regExp);
                 const videoId = match ? match[2] : null;
 
-                const metaRes = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(link)}`);
+                const metaRes = await fetch(`${CORS_PROXY}${encodeURIComponent(`https://noembed.com/embed?url=${link}`)}`);
                 const meta = await metaRes.json();
                 title = meta.title || title;
                 artist = meta.author_name || "YouTube";
                 if (videoId) coverUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+                // Piped API (Alternative Client YouTube senza rate-limit CORS)
+                const streamRes = await fetch(`https://pipedapi.kavin.rocks/streams/${videoId}`);
+                const streamData = await streamRes.json();
+                const audioStream = streamData.audioStreams.find(s => s.mimeType.includes("audio/mp4") || s.mimeType.includes("audio/webm"));
+
+                return {
+                    audioUrl: audioStream ? audioStream.url : link,
+                    title: title,
+                    artist: artist,
+                    coverUrl: coverUrl,
+                    duration: streamData.duration || 240
+                };
+            } else {
+                return {
+                    audioUrl: link,
+                    title: "Link Audio Esterno",
+                    artist: "Sconosciuto",
+                    coverUrl: coverUrl,
+                    duration: 180
+                };
             }
-
-            // 2. Estrazione dello stream diretto MP3 tramite Cobalt API
-            const apiRes = await fetch("https://api.cobalt.tools/api/json", {
-                method: "POST",
-                headers: { "Accept": "application/json", "Content-Type": "application/json" },
-                body: JSON.stringify({ url: link, downloadMode: "audio" })
-            });
-            const apiData = await apiRes.json();
-            
-            if (!apiData.url) throw new Error("Impossibile estrarre l'audio dal link.");
-
-            // 3. Download temporaneo del file MP3 nel browser (Blob)
-            const audioFetch = await fetch(apiData.url);
-            const audioBlob = await audioFetch.blob();
-
-            // 4. Upload del file MP3 su Catbox
-            const catboxMp3Url = await uploadToLitterbox(audioBlob, "converted_track.mp3");
-
-            return {
-                audioUrl: catboxMp3Url, // URL del vero file MP3 salvato su Catbox
-                title: title,
-                artist: artist,
-                coverUrl: coverUrl,
-                duration: 240
-            };
         }
 
         async function handleFormSubmit() {
@@ -173,7 +188,7 @@
             const fileInput = document.getElementById("file-input");
             const file = fileInput.files[0];
 
-            statusMsg.innerText = "⏳ Elaborazione e conversione file...";
+            statusMsg.innerText = "⏳ Elaborazione in corso...";
 
             try {
                 let songData = {
@@ -182,29 +197,29 @@
                 };
 
                 if (file) {
-                    statusMsg.innerText = "⏳ Caricamento file locale su Catbox...";
-                    songData.audioUrl = await uploadToLitterbox(file, file.name);
+                    statusMsg.innerText = "⏳ Upload del file su cloud locale...";
+                    songData.audioUrl = await uploadToLitterbox(file);
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
                     songData.artist = "File Upload";
                     songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+Locale";
                     songData.duration = 180;
                 } else if (link) {
-                    statusMsg.innerText = "⏳ Conversione link in MP3 + Upload Catbox...";
-                    const processedData = await convertLinkAndUploadToCatbox(link);
-                    songData = { ...songData, ...processedData };
+                    statusMsg.innerText = "⏳ Conversione del link in audio MP3...";
+                    const extracted = await processLink(link);
+                    songData = { ...songData, ...extracted };
                 } else {
                     statusMsg.innerText = "⚠️ Inserisci un link o un file!";
                     return;
                 }
 
                 await db.collection("queue").add(songData);
-                statusMsg.innerText = "✅ Canzone salvata come MP3 locale in coda!";
+                statusMsg.innerText = "✅ Canzone inviata alla radio!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
-                statusMsg.innerText = "❌ Errore nella conversione MP3: " + err.message;
+                statusMsg.innerText = "❌ Errore durante l'invio: " + err.message;
             }
         }
 
