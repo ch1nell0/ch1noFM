@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Web Radio MP3</title>
+    <title>JulyFM - Web Radio Semplificata</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
 
-    <!-- Firebase SDK Compatibile -->
+    <!-- Firebase SDK Compatibile (Solo Firestore nativo) -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 
@@ -31,7 +31,7 @@
         .queue-item { background: #1e212b; padding: 10px 14px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
         .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
         label { font-size: 0.85rem; color: #94a3b8; font-weight: 600; }
-        input[type="text"], select, input[type="file"] { background: #1e212b; border: 1px solid #334155; color: white; padding: 10px; border-radius: 8px; font-size: 0.9rem; outline: none; }
+        input[type="text"], input[type="file"] { background: #1e212b; border: 1px solid #334155; color: white; padding: 10px; border-radius: 8px; font-size: 0.9rem; outline: none; }
         .submit-btn { background: #10b981; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
         #status-msg { margin-top: 10px; font-size: 0.85rem; color: #f59e0b; text-align: center; }
         .start-audio-btn { background: #f59e0b; color: #000; border: none; padding: 12px; border-radius: 8px; font-weight: 800; cursor: pointer; width: 100%; margin-bottom: 16px; }
@@ -41,7 +41,7 @@
 
     <div class="main-container">
         <div class="player-card">
-            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA AUDIO RADIO</button>
+            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA STREAM AUDIO RADIO</button>
 
             <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
             <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
@@ -50,7 +50,6 @@
             <div id="song-artist" class="song-artist">Radio online</div>
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
-            <!-- PLAYER NATIVO AUDIO MP3 -->
             <audio id="radio-player" controls autoplay></audio>
 
             <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
@@ -66,12 +65,12 @@
         <div class="request-card">
             <div style="margin-bottom: 10px; font-weight: 700;">🎵 Richiedi una Canzone</div>
             <div class="form-group">
-                <label>Link (YouTube, SoundCloud, MP3):</label>
-                <input type="text" id="song-link" placeholder="Incolla l'URL qui...">
+                <label>Link Audio MP3 / Stream Diretto:</label>
+                <input type="text" id="song-link" placeholder="https://esempio.com/canzone.mp3">
             </div>
             <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
             <div class="form-group">
-                <label>Carica File Audio MP3 da PC:</label>
+                <label>Carica File Audio da PC (MP3, WAV, AAC):</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
             <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
@@ -102,60 +101,14 @@
             document.getElementById("enable-audio-btn").style.color = "#fff";
         }
 
-        // CARICAMENTO FILE MP3 LOCALE SU HOSTING TEMPORANEO
-        async function uploadFileToCloud(file) {
-            const formData = new FormData();
-            formData.append("reqtype", "fileupload");
-            formData.append("time", "1h");
-            formData.append("fileToUpload", file);
-
-            const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
-                method: "POST",
-                body: formData
+        // Funzione per convertire file locali in Base64 (zero chiamate di rete esterne!)
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = error => reject(error);
             });
-            return await res.text();
-        }
-
-        // GESTIONE LINK YOUTUBE / SOUNDCLOUD IN FORMATO AUDIO DIRETTO
-        async function processAudioLink(link) {
-            let title = "Traccia Audio";
-            let artist = "Artista";
-            let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=Audio";
-            let audioUrl = "";
-
-            if (link.includes("youtube.com") || link.includes("youtu.be")) {
-                const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-                const match = link.match(regExp);
-                const videoId = match ? match[2] : null;
-
-                // Estrazione dati senza blocchi CORS
-                const metaRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://noembed.com/embed?url=${link}`)}`);
-                const metaRaw = await metaRes.json();
-                const meta = JSON.parse(metaRaw.contents);
-
-                title = meta.title || title;
-                artist = meta.author_name || "YouTube";
-                if (videoId) coverUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-                // URL audio diretto estratto da Piped (senza CORS block)
-                const streamRes = await fetch(`https://pipedapi.kavin.rocks/streams/${videoId}`);
-                const streamData = await streamRes.json();
-                const audioStream = streamData.audioStreams.find(s => s.mimeType.includes("audio"));
-
-                audioUrl = audioStream ? audioStream.url : link;
-            } else if (link.includes("soundcloud.com")) {
-                const scRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://soundcloud.com/oembed?format=json&url=${link}`)}`);
-                const scRaw = await scRes.json();
-                const scData = JSON.parse(scRaw.contents);
-                title = scData.title || title;
-                artist = scData.author_name || "SoundCloud";
-                coverUrl = scData.thumbnail_url || coverUrl;
-                audioUrl = link;
-            } else {
-                audioUrl = link;
-            }
-
-            return { audioUrl, title, artist, coverUrl };
         }
 
         async function handleFormSubmit() {
@@ -164,7 +117,7 @@
             const fileInput = document.getElementById("file-input");
             const file = fileInput.files[0];
 
-            statusMsg.innerText = "⏳ Inviando la traccia...";
+            statusMsg.innerText = "⏳ Inserimento brano in corso...";
 
             try {
                 let songData = {
@@ -173,28 +126,38 @@
                 };
 
                 if (file) {
-                    statusMsg.innerText = "⏳ Caricamento file MP3 su cloud...";
-                    songData.audioUrl = await uploadFileToCloud(file);
+                    // Controlla la dimensione del file (limite raccomandato per Firestore: ~8MB)
+                    if (file.size > 9 * 1024 * 1024) {
+                        statusMsg.innerText = "⚠️ Il file è troppo grande! Seleziona un file sotto i 9 MB.";
+                        return;
+                    }
+
+                    statusMsg.innerText = "⏳ Lettura file locale in corso...";
+                    const base64Audio = await fileToBase64(file);
+                    
+                    songData.audioUrl = base64Audio;
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
-                    songData.artist = "Upload MP3";
-                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+MP3";
+                    songData.artist = "Upload Locale";
+                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+Locale";
                 } else if (link) {
-                    statusMsg.innerText = "⏳ Elaborazione link audio...";
-                    const processed = await processAudioLink(link);
-                    songData = { ...songData, ...processed };
+                    songData.audioUrl = link;
+                    songData.title = "Traccia da Link";
+                    songData.artist = "URL Audio";
+                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=Link+Audio";
                 } else {
-                    statusMsg.innerText = "⚠️ Inserisci un link o un file MP3!";
+                    statusMsg.innerText = "⚠️ Seleziona un file dal PC o incolla un link!";
                     return;
                 }
 
+                // Salva direttamente su Firestore
                 await db.collection("queue").add(songData);
-                statusMsg.innerText = "✅ Traccia inserita con successo in coda!";
+                statusMsg.innerText = "✅ Canzone inviata alla coda con successo!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
-                statusMsg.innerText = "❌ Si è verificato un errore durante l'invio.";
+                statusMsg.innerText = "❌ Errore durante l'invio: " + err.message;
             }
         }
 
