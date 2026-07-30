@@ -267,6 +267,18 @@
             text-align: center;
             word-break: break-word;
         }
+
+        .start-audio-btn {
+            background: #f59e0b;
+            color: #000;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 12px;
+        }
     </style>
 </head>
 <body>
@@ -274,6 +286,8 @@
     <div class="main-container">
         <!-- PLAYER -->
         <div class="player-card">
+            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 Clicca qui per Abilitare l'Audio</button>
+
             <div class="radio-badge">
                 <div class="dot"></div> LIVE RADIO
             </div>
@@ -363,6 +377,17 @@
 
         let ytPlayer = null;
         let isYtReady = false;
+        let audioUnlocked = false;
+
+        function enableAudio() {
+            audioUnlocked = true;
+            document.getElementById("enable-audio-btn").style.display = "none";
+            const audioPlayer = document.getElementById('radio-player');
+            audioPlayer.play().catch(() => {});
+            if (ytPlayer && isYtReady && typeof ytPlayer.playVideo === 'function') {
+                ytPlayer.playVideo();
+            }
+        }
 
         function onYouTubeIframeAPIReady() {
             ytPlayer = new YT.Player('yt-player', {
@@ -406,7 +431,7 @@
             return await response.text();
         }
 
-        // Estrazione dati YouTube senza chiamate API soggette a CORS/blocchi IP
+        // Estrazione dettagli YouTube
         async function getYouTubeDetails(link) {
             const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
             const match = link.match(regExp);
@@ -417,7 +442,6 @@
 
             const videoId = match[2];
             
-            // OOttieni i metadati tramite oEmbed API ufficiale (no CORS issue)
             try {
                 const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
                 const data = await res.json();
@@ -427,7 +451,7 @@
                     title: data.title || "Traccia YouTube",
                     artist: data.author_name || "YouTube",
                     coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    duration: 210 // Durata standard stimata in secondi
+                    duration: 210
                 };
             } catch (e) {
                 return {
@@ -552,7 +576,26 @@
             await nextSongDoc.ref.delete();
         }
 
-        // PLAYER ENGINE centralizzato
+        // HEARTBEAT DI CONTROLLO (Risolve il problema dei brani fermi)
+        setInterval(async () => {
+            const currentDoc = await db.collection("radioState").doc("current").get();
+            if (!currentDoc.exists()) {
+                const queueSnapshot = await db.collection("queue").limit(1).get();
+                if (!queueSnapshot.empty) {
+                    advanceQueue();
+                }
+            } else {
+                const data = currentDoc.data();
+                if (data.startTime) {
+                    const elapsedTimeSeconds = (Date.now() - data.startTime.toMillis()) / 1000;
+                    if (elapsedTimeSeconds >= data.duration) {
+                        advanceQueue();
+                    }
+                }
+            }
+        }, 3000);
+
+        // PLAYER ENGINE
         const audioPlayer = document.getElementById('radio-player');
 
         db.collection("radioState").doc("current").onSnapshot(doc => {
