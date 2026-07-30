@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Web Radio Semplificata</title>
+    <title>JulyFM - Web Radio</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
 
-    <!-- Firebase SDK Compatibile (Solo Firestore nativo) -->
+    <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 
@@ -26,6 +26,7 @@
         .song-artist { font-size: 0.95rem; color: #94a3b8; margin-bottom: 12px; }
         .requested-by { font-size: 0.85rem; color: #64748b; background: #1e212b; padding: 6px 14px; border-radius: 8px; display: inline-block; margin-bottom: 16px; }
         audio { width: 100%; margin-bottom: 16px; filter: invert(0.9) hue-rotate(180deg); }
+        iframe { width: 100%; height: 210px; border-radius: 12px; border: none; margin-bottom: 16px; }
         .skip-btn { background: #ef4444; color: white; border: none; padding: 12px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
         .queue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
         .queue-item { background: #1e212b; padding: 10px 14px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
@@ -41,16 +42,21 @@
 
     <div class="main-container">
         <div class="player-card">
-            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA STREAM AUDIO RADIO</button>
+            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA STREAM RADIO</button>
 
             <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
-            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
+            
+            <!-- Contenitore Copertina / Video YouTube -->
+            <div id="media-container">
+                <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
+            </div>
             
             <div id="song-title" class="song-title">In attesa di brani...</div>
             <div id="song-artist" class="song-artist">Radio online</div>
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
-            <audio id="radio-player" controls autoplay></audio>
+            <!-- Player Audio Nativo per File MP3 -->
+            <audio id="radio-player" controls autoplay style="display: none;"></audio>
 
             <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
         </div>
@@ -65,12 +71,12 @@
         <div class="request-card">
             <div style="margin-bottom: 10px; font-weight: 700;">🎵 Richiedi una Canzone</div>
             <div class="form-group">
-                <label>Link Audio MP3 / Stream Diretto:</label>
-                <input type="text" id="song-link" placeholder="https://esempio.com/canzone.mp3">
+                <label>Link YouTube o URL MP3 diretto:</label>
+                <input type="text" id="song-link" placeholder="Incolla URL YouTube o MP3...">
             </div>
             <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
             <div class="form-group">
-                <label>Carica File Audio da PC (MP3, WAV, AAC):</label>
+                <label>Carica File Audio da PC (MP3, WAV):</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
             <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
@@ -96,18 +102,25 @@
         function enableAudio() {
             const player = document.getElementById('radio-player');
             player.play().catch(() => {});
-            document.getElementById("enable-audio-btn").innerText = "✅ AUDIO RADIO PRONTO";
+            document.getElementById("enable-audio-btn").innerText = "✅ AUDIO PRONTO";
             document.getElementById("enable-audio-btn").style.background = "#10b981";
             document.getElementById("enable-audio-btn").style.color = "#fff";
         }
 
-        // Funzione per convertire file locali in Base64 (zero chiamate di rete esterne!)
+        // Estrazione ID da link YouTube
+        function extractYouTubeId(url) {
+            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const match = url.match(regExp);
+            return (match && match[2].length === 11) ? match[2] : null;
+        }
+
+        // Lettura file locale in Base64 (Istantaneo)
         function fileToBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.readAsDataURL(file);
                 reader.onload = () => resolve(reader.result);
-                reader.onerror = error => reject(error);
+                reader.onerror = err => reject(err);
             });
         }
 
@@ -117,7 +130,7 @@
             const fileInput = document.getElementById("file-input");
             const file = fileInput.files[0];
 
-            statusMsg.innerText = "⏳ Inserimento brano in corso...";
+            statusMsg.innerText = "⏳ Inserimento in corso...";
 
             try {
                 let songData = {
@@ -126,38 +139,40 @@
                 };
 
                 if (file) {
-                    // Controlla la dimensione del file (limite raccomandato per Firestore: ~8MB)
                     if (file.size > 9 * 1024 * 1024) {
-                        statusMsg.innerText = "⚠️ Il file è troppo grande! Seleziona un file sotto i 9 MB.";
+                        statusMsg.innerText = "⚠️ Il file supera i 9 MB!";
                         return;
                     }
-
-                    statusMsg.innerText = "⏳ Lettura file locale in corso...";
-                    const base64Audio = await fileToBase64(file);
-                    
-                    songData.audioUrl = base64Audio;
+                    songData.type = "mp3";
+                    songData.audioUrl = await fileToBase64(file);
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
                     songData.artist = "Upload Locale";
-                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+Locale";
                 } else if (link) {
-                    songData.audioUrl = link;
-                    songData.title = "Traccia da Link";
-                    songData.artist = "URL Audio";
-                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=Link+Audio";
+                    const ytId = extractYouTubeId(link);
+                    if (ytId) {
+                        songData.type = "youtube";
+                        songData.youtubeId = ytId;
+                        songData.title = "Video YouTube";
+                        songData.artist = "YouTube Live Stream";
+                    } else {
+                        songData.type = "mp3";
+                        songData.audioUrl = link;
+                        songData.title = "Audio da Link Direct";
+                        songData.artist = "Stream Esterno";
+                    }
                 } else {
-                    statusMsg.innerText = "⚠️ Seleziona un file dal PC o incolla un link!";
+                    statusMsg.innerText = "⚠️ Inserisci un link o un file!";
                     return;
                 }
 
-                // Salva direttamente su Firestore
                 await db.collection("queue").add(songData);
-                statusMsg.innerText = "✅ Canzone inviata alla coda con successo!";
+                statusMsg.innerText = "✅ Inserito in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
-                statusMsg.innerText = "❌ Errore durante l'invio: " + err.message;
+                statusMsg.innerText = "❌ Errore: " + err.message;
             }
         }
 
@@ -197,10 +212,13 @@
         function forceSkip() { advanceQueue(); }
 
         const audioPlayer = document.getElementById('radio-player');
+        const mediaContainer = document.getElementById('media-container');
 
         db.collection("radioState").doc("current").onSnapshot(doc => {
             if (!doc.exists()) {
                 audioPlayer.pause();
+                audioPlayer.style.display = "none";
+                mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
                 document.getElementById('requested-by').innerText = "---";
@@ -210,18 +228,28 @@
             const data = doc.data();
             document.getElementById('song-title').innerText = data.title;
             document.getElementById('song-artist').innerText = data.artist;
-            document.getElementById('album-cover').src = data.coverUrl || "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
             document.getElementById('requested-by').innerText = data.requestedBy;
 
-            if (data.audioUrl) {
+            let startOffset = 0;
+            if (data.startTime) {
+                startOffset = Math.floor(Math.max(0, (Date.now() - data.startTime.toMillis()) / 1000));
+            }
+
+            if (data.type === "youtube") {
+                audioPlayer.pause();
+                audioPlayer.style.display = "none";
+                
+                // Embed YouTube con auto-play e punto di inizio sincronizzato
+                mediaContainer.innerHTML = `<iframe src="https://www.youtube.com/embed/${data.youtubeId}?autoplay=1&start=${startOffset}" allow="autoplay"></iframe>`;
+            } else {
+                mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
+                audioPlayer.style.display = "block";
+
                 if (audioPlayer.src !== data.audioUrl) {
                     audioPlayer.src = data.audioUrl;
                 }
-                if (data.startTime) {
-                    const elapsedTime = Math.max(0, (Date.now() - data.startTime.toMillis()) / 1000);
-                    if (Math.abs(audioPlayer.currentTime - elapsedTime) > 2) {
-                        audioPlayer.currentTime = elapsedTime;
-                    }
+                if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
+                    audioPlayer.currentTime = startOffset;
                 }
                 audioPlayer.play().catch(() => {});
             }
