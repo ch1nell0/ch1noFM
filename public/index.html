@@ -9,9 +9,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
 
-    <!-- Firebase SDK Compatibile (Senza addDoc) -->
+    <!-- Firebase SDK Compatibile -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <!-- YouTube IFrame Player API -->
+    <script src="https://www.youtube.com/iframe_api"></script>
 
     <style>
         * {
@@ -120,6 +122,13 @@
             width: 100%;
             margin-bottom: 16px;
             filter: invert(0.9) hue-rotate(180deg);
+        }
+
+        #yt-player-container {
+            display: none;
+            margin-bottom: 16px;
+            border-radius: 8px;
+            overflow: hidden;
         }
 
         .skip-section {
@@ -263,7 +272,7 @@
 <body>
 
     <div class="main-container">
-        <!-- PLAYER (UNICO BLOCCO) -->
+        <!-- PLAYER -->
         <div class="player-card">
             <div class="radio-badge">
                 <div class="dot"></div> LIVE RADIO
@@ -276,7 +285,13 @@
             
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
+            <!-- Native Audio Player per MP3 e File Caricati -->
             <audio id="radio-player" controls></audio>
+            
+            <!-- Hidden YouTube Player Container -->
+            <div id="yt-player-container">
+                <div id="yt-player"></div>
+            </div>
 
             <div class="skip-section">
                 <button class="skip-btn" onclick="voteSkip()">Vota per Saltare Brano (<span id="votes-count">0</span>/<span id="required-votes">1</span>)</button>
@@ -286,7 +301,7 @@
             </div>
         </div>
 
-        <!-- CODA BRANI (UNICO BLOCCO) -->
+        <!-- CODA BRANI -->
         <div class="queue-card">
             <div class="section-title">
                 <span>📋 Prossimi Brani in Coda</span>
@@ -297,7 +312,7 @@
             </ul>
         </div>
 
-        <!-- FORM RICHIESTA (UNICO BLOCCO) -->
+        <!-- FORM RICHIESTA -->
         <div class="request-card">
             <div class="section-title">🎵 Richiedi una Canzone</div>
 
@@ -346,6 +361,23 @@
             localStorage.setItem("radio_uid", userId);
         }
 
+        let ytPlayer = null;
+        let isYtReady = false;
+
+        function onYouTubeIframeAPIReady() {
+            ytPlayer = new YT.Player('yt-player', {
+                height: '0',
+                width: '0',
+                playerVars: {
+                    'autoplay': 1,
+                    'controls': 0
+                },
+                events: {
+                    'onReady': () => { isYtReady = true; }
+                }
+            });
+        }
+
         function updateIdentity() {
             const mode = document.getElementById("user-mode").value;
             document.getElementById("twitch-name").style.display = (mode === "twitch") ? "block" : "none";
@@ -374,52 +406,42 @@
             return await response.text();
         }
 
-        // Estrazione YouTube
-        async function getYouTubeAudio(link) {
-            let videoId = "";
+        // Estrazione dati YouTube senza chiamate API soggette a CORS/blocchi IP
+        async function getYouTubeDetails(link) {
             const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
             const match = link.match(regExp);
 
-            if (match && match[2].length === 11) {
-                videoId = match[2];
-            } else {
+            if (!match || match[2].length !== 11) {
                 throw new Error("URL YouTube non valido.");
             }
 
-            const endpoints = [
-                `https://api.piped.projectsegfau.lt/streams/${videoId}`,
-                `https://pipedapi.kavin.rocks/streams/${videoId}`
-            ];
-
-            for (let ep of endpoints) {
-                try {
-                    const res = await fetch(ep);
-                    if (res.ok) {
-                        const data = await res.json();
-                        const streams = data.audioStreams || [];
-                        if (streams.length > 0) {
-                            return {
-                                audioUrl: streams[0].url,
-                                title: data.title || "Brano YouTube",
-                                artist: data.uploader || "YouTube",
-                                coverUrl: data.thumbnailUrl || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                                duration: data.duration || 180
-                            };
-                        }
-                    }
-                } catch (e) {}
+            const videoId = match[2];
+            
+            // OOttieni i metadati tramite oEmbed API ufficiale (no CORS issue)
+            try {
+                const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+                const data = await res.json();
+                return {
+                    videoId: videoId,
+                    type: "youtube",
+                    title: data.title || "Traccia YouTube",
+                    artist: data.author_name || "YouTube",
+                    coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    duration: 210 // Durata standard stimata in secondi
+                };
+            } catch (e) {
+                return {
+                    videoId: videoId,
+                    type: "youtube",
+                    title: "Traccia YouTube",
+                    artist: "YouTube",
+                    coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    duration: 210
+                };
             }
-
-            return {
-                audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
-                title: "Traccia YouTube",
-                artist: "YouTube",
-                coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                duration: 180
-            };
         }
 
-        // INVIO IN CODA (Senza addDoc, usa la sintassi nativa .add)
+        // INVIO IN CODA
         async function handleFormSubmit() {
             const statusMsg = document.getElementById("status-msg");
             const link = document.getElementById("song-link").value.trim();
@@ -429,46 +451,43 @@
 
             statusMsg.innerText = "⏳ Inizio elaborazione brano...";
 
-            let finalAudioUrl = "";
-            let songTitle = "Traccia Audio";
-            let artistName = "Web Radio";
-            let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
-            let durationSec = 180;
+            let songData = {
+                type: "direct",
+                audioUrl: "",
+                title: "Traccia Audio",
+                artist: "Web Radio",
+                coverUrl: "https://via.placeholder.com/180/16181e/64748b?text=JulyFM",
+                duration: 180,
+                requestedBy: String(activeUser),
+                requestedById: String(userId),
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
 
             try {
                 if (file) {
                     statusMsg.innerText = "⏳ Caricamento file locale...";
-                    finalAudioUrl = await uploadToLitterbox(file);
-                    songTitle = file.name.replace(/\.[^/.]+$/, "");
+                    songData.audioUrl = await uploadToLitterbox(file);
+                    songData.title = file.name.replace(/\.[^/.]+$/, "");
                 } else if (link) {
                     if (link.includes("youtube.com") || link.includes("youtu.be")) {
-                        statusMsg.innerText = "⏳ Estrazione audio YouTube...";
-                        const ytData = await getYouTubeAudio(link);
-                        finalAudioUrl = ytData.audioUrl;
-                        songTitle = ytData.title;
-                        artistName = ytData.artist;
-                        coverUrl = ytData.coverUrl;
-                        durationSec = ytData.duration;
+                        statusMsg.innerText = "⏳ Recupero dati da YouTube...";
+                        const ytData = await getYouTubeDetails(link);
+                        songData.type = "youtube";
+                        songData.videoId = ytData.videoId;
+                        songData.title = ytData.title;
+                        songData.artist = ytData.artist;
+                        songData.coverUrl = ytData.coverUrl;
+                        songData.duration = ytData.duration;
                     } else {
-                        finalAudioUrl = link;
-                        songTitle = "Link Audio Esterno";
+                        songData.audioUrl = link;
+                        songData.title = "Link Audio Esterno";
                     }
                 } else {
                     statusMsg.innerText = "⚠️ Inserisci un link o carica un file!";
                     return;
                 }
 
-                // Salvataggio sicuro in Firestore
-                await db.collection("queue").add({
-                    title: String(songTitle),
-                    artist: String(artistName),
-                    audioUrl: String(finalAudioUrl),
-                    duration: Number(durationSec) || 180,
-                    coverUrl: String(coverUrl),
-                    requestedBy: String(activeUser),
-                    requestedById: String(userId),
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
+                await db.collection("queue").add(songData);
 
                 statusMsg.innerText = "✅ Canzone inviata in coda!";
                 document.getElementById("song-link").value = "";
@@ -533,11 +552,15 @@
             await nextSongDoc.ref.delete();
         }
 
-        // PLAYER ENGINE
+        // PLAYER ENGINE centralizzato
         const audioPlayer = document.getElementById('radio-player');
+
         db.collection("radioState").doc("current").onSnapshot(doc => {
             if (!doc.exists()) {
                 audioPlayer.pause();
+                if (ytPlayer && isYtReady && typeof ytPlayer.stopVideo === 'function') {
+                    ytPlayer.stopVideo();
+                }
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
                 document.getElementById('requested-by').innerText = "---";
@@ -557,12 +580,33 @@
             document.getElementById('votes-count').innerText = votes.length;
             document.getElementById('voters-names').innerText = votersNames.length > 0 ? votersNames.join(", ") : "Nessuno";
 
-            if (data.audioUrl && data.startTime) {
+            if (data.startTime) {
                 const elapsedTimeSeconds = (Date.now() - data.startTime.toMillis()) / 1000;
                 
                 if (elapsedTimeSeconds >= data.duration) {
                     advanceQueue();
-                } else {
+                    return;
+                }
+
+                if (data.type === "youtube" && data.videoId) {
+                    audioPlayer.pause();
+                    audioPlayer.style.display = "none";
+
+                    if (ytPlayer && isYtReady) {
+                        const state = ytPlayer.getPlayerState();
+                        if (ytPlayer.getVideoData() && ytPlayer.getVideoData().video_id !== data.videoId) {
+                            ytPlayer.loadVideoById(data.videoId, elapsedTimeSeconds);
+                        } else if (state !== YT.PlayerState.PLAYING) {
+                            ytPlayer.seekTo(elapsedTimeSeconds, true);
+                            ytPlayer.playVideo();
+                        }
+                    }
+                } else if (data.audioUrl) {
+                    if (ytPlayer && isYtReady && typeof ytPlayer.stopVideo === 'function') {
+                        ytPlayer.stopVideo();
+                    }
+                    audioPlayer.style.display = "block";
+
                     if (audioPlayer.src !== data.audioUrl) {
                         audioPlayer.src = data.audioUrl;
                     }
