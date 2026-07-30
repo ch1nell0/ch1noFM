@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Web Radio Direct Stream</title>
+    <title>JulyFM - Web Radio MP3</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -50,7 +50,7 @@
             <div id="song-artist" class="song-artist">Radio online</div>
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
-            <!-- LETTORE AUDIO NATIVO SENZA IFRAME -->
+            <!-- PLAYER NATIVO AUDIO MP3 -->
             <audio id="radio-player" controls autoplay></audio>
 
             <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
@@ -71,7 +71,7 @@
             </div>
             <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
             <div class="form-group">
-                <label>Carica File Audio da PC:</label>
+                <label>Carica File Audio MP3 da PC:</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
             <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
@@ -102,8 +102,8 @@
             document.getElementById("enable-audio-btn").style.color = "#fff";
         }
 
-        // CARICAMENTO FILE DA PC SU CATBOX (Utilizza FormData standard per evitare NetworkError)
-        async function uploadToLitterbox(file) {
+        // CARICAMENTO FILE MP3 LOCALE SU HOSTING TEMPORANEO
+        async function uploadFileToCloud(file) {
             const formData = new FormData();
             formData.append("reqtype", "fileupload");
             formData.append("time", "1h");
@@ -113,73 +113,49 @@
                 method: "POST",
                 body: formData
             });
-            if (!res.ok) throw new Error("Errore durante il caricamento del file.");
             return await res.text();
         }
 
-        // PROXY ANTI-CORS PER CHIAMATE SICURE
-        const CORS_PROXY = "https://corsproxy.io/?";
-
-        async function processLink(link) {
+        // GESTIONE LINK YOUTUBE / SOUNDCLOUD IN FORMATO AUDIO DIRETTO
+        async function processAudioLink(link) {
             let title = "Traccia Audio";
             let artist = "Artista";
             let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=Audio";
+            let audioUrl = "";
 
-            if (link.includes("soundcloud.com")) {
-                const scRes = await fetch(`${CORS_PROXY}${encodeURIComponent(`https://soundcloud.com/oembed?format=json&url=${link}`)}`);
-                const scData = await scRes.json();
-                title = scData.title || title;
-                artist = scData.author_name || "SoundCloud";
-                coverUrl = scData.thumbnail_url || coverUrl;
-
-                // Estrazione audio tramite Invidious/Cobalt sicuro via proxy
-                const apiRes = await fetch("https://api.cobalt.tools/api/json", {
-                    method: "POST",
-                    headers: { "Accept": "application/json", "Content-Type": "application/json" },
-                    body: JSON.stringify({ url: link, downloadMode: "audio" })
-                });
-                const apiData = await apiRes.json();
-
-                return {
-                    audioUrl: apiData.url || link,
-                    title: title,
-                    artist: artist,
-                    coverUrl: coverUrl,
-                    duration: 240
-                };
-
-            } else if (link.includes("youtube.com") || link.includes("youtu.be")) {
+            if (link.includes("youtube.com") || link.includes("youtu.be")) {
                 const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
                 const match = link.match(regExp);
                 const videoId = match ? match[2] : null;
 
-                const metaRes = await fetch(`${CORS_PROXY}${encodeURIComponent(`https://noembed.com/embed?url=${link}`)}`);
-                const meta = await metaRes.json();
+                // Estrazione dati senza blocchi CORS
+                const metaRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://noembed.com/embed?url=${link}`)}`);
+                const metaRaw = await metaRes.json();
+                const meta = JSON.parse(metaRaw.contents);
+
                 title = meta.title || title;
                 artist = meta.author_name || "YouTube";
                 if (videoId) coverUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-                // Piped API (Alternative Client YouTube senza rate-limit CORS)
+                // URL audio diretto estratto da Piped (senza CORS block)
                 const streamRes = await fetch(`https://pipedapi.kavin.rocks/streams/${videoId}`);
                 const streamData = await streamRes.json();
-                const audioStream = streamData.audioStreams.find(s => s.mimeType.includes("audio/mp4") || s.mimeType.includes("audio/webm"));
+                const audioStream = streamData.audioStreams.find(s => s.mimeType.includes("audio"));
 
-                return {
-                    audioUrl: audioStream ? audioStream.url : link,
-                    title: title,
-                    artist: artist,
-                    coverUrl: coverUrl,
-                    duration: streamData.duration || 240
-                };
+                audioUrl = audioStream ? audioStream.url : link;
+            } else if (link.includes("soundcloud.com")) {
+                const scRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(`https://soundcloud.com/oembed?format=json&url=${link}`)}`);
+                const scRaw = await scRes.json();
+                const scData = JSON.parse(scRaw.contents);
+                title = scData.title || title;
+                artist = scData.author_name || "SoundCloud";
+                coverUrl = scData.thumbnail_url || coverUrl;
+                audioUrl = link;
             } else {
-                return {
-                    audioUrl: link,
-                    title: "Link Audio Esterno",
-                    artist: "Sconosciuto",
-                    coverUrl: coverUrl,
-                    duration: 180
-                };
+                audioUrl = link;
             }
+
+            return { audioUrl, title, artist, coverUrl };
         }
 
         async function handleFormSubmit() {
@@ -188,7 +164,7 @@
             const fileInput = document.getElementById("file-input");
             const file = fileInput.files[0];
 
-            statusMsg.innerText = "⏳ Elaborazione in corso...";
+            statusMsg.innerText = "⏳ Inviando la traccia...";
 
             try {
                 let songData = {
@@ -197,29 +173,28 @@
                 };
 
                 if (file) {
-                    statusMsg.innerText = "⏳ Upload del file su cloud locale...";
-                    songData.audioUrl = await uploadToLitterbox(file);
+                    statusMsg.innerText = "⏳ Caricamento file MP3 su cloud...";
+                    songData.audioUrl = await uploadFileToCloud(file);
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
-                    songData.artist = "File Upload";
-                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+Locale";
-                    songData.duration = 180;
+                    songData.artist = "Upload MP3";
+                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+MP3";
                 } else if (link) {
-                    statusMsg.innerText = "⏳ Conversione del link in audio MP3...";
-                    const extracted = await processLink(link);
-                    songData = { ...songData, ...extracted };
+                    statusMsg.innerText = "⏳ Elaborazione link audio...";
+                    const processed = await processAudioLink(link);
+                    songData = { ...songData, ...processed };
                 } else {
-                    statusMsg.innerText = "⚠️ Inserisci un link o un file!";
+                    statusMsg.innerText = "⚠️ Inserisci un link o un file MP3!";
                     return;
                 }
 
                 await db.collection("queue").add(songData);
-                statusMsg.innerText = "✅ Canzone inviata alla radio!";
+                statusMsg.innerText = "✅ Traccia inserita con successo in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
-                statusMsg.innerText = "❌ Errore durante l'invio: " + err.message;
+                statusMsg.innerText = "❌ Si è verificato un errore durante l'invio.";
             }
         }
 
