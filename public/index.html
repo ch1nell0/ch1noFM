@@ -385,24 +385,93 @@
             return await response.text();
         }
 
-        // --- GESTIONE INVIA CANZONE ---
-        async function handleFormSubmit() {
-            const statusMsg = document.getElementById("status-msg");
-            const link = document.getElementById("song-link").value.trim();
-            const fileInput = document.getElementById("file-input");
-            const file = fileInput.files[0];
-            const activeUser = getActiveUserDisplayName();
+// --- GESTIONE INVIA CANZONE (CON PROXY CORS E API YT) ---
+async function handleFormSubmit() {
+    const statusMsg = document.getElementById("status-msg");
+    const link = document.getElementById("song-link").value.trim();
+    const fileInput = document.getElementById("file-input");
+    const file = fileInput.files[0];
+    const activeUser = getActiveUserDisplayName();
 
-            // Controllo Cooldown
-            const userDoc = await db.collection("users").doc(userId).get();
-            if (userDoc.exists && userDoc.data().cooldownUntil) {
-                const cooldownUntil = userDoc.data().cooldownUntil.toMillis();
-                if (Date.now() < cooldownUntil) {
-                    const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
-                    statusMsg.innerText = `⏳ Attendi ancora ${waitSec}s per il cooldown!`;
-                    return;
-                }
+    // Controllo Cooldown
+    const userDoc = await db.collection("users").doc(userId).get();
+    if (userDoc.exists && userDoc.data().cooldownUntil) {
+        const cooldownUntil = userDoc.data().cooldownUntil.toMillis();
+        if (Date.now() < cooldownUntil) {
+            const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
+            statusMsg.innerText = `⏳ Attendi ancora ${waitSec}s per il cooldown!`;
+            return;
+        }
+    }
+
+    statusMsg.innerText = "⏳ Elaborazione brano...";
+
+    let finalAudioUrl = "";
+    let songTitle = "Traccia Sconosciuta";
+    let artistName = "YouTube / Web";
+    let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
+    let durationSec = 180;
+
+    try {
+        if (file) {
+            statusMsg.innerText = "⏳ Caricamento file locale...";
+            finalAudioUrl = await uploadToLitterbox(file);
+            songTitle = file.name.replace(/\.[^/.]+$/, "");
+        } else if (link) {
+            statusMsg.innerText = "⏳ Conversione e analisi link YouTube...";
+            
+            // Usiamo un convertitore Invidious/Piped senza problemi di CORS
+            const corsProxy = "https://corsproxy.io/?";
+            const targetApi = "https://api.cobalt.tools/api/json";
+
+            const res = await fetch(corsProxy + encodeURIComponent(targetApi), {
+                method: "POST",
+                headers: { 
+                    "Content-Type": "application/json", 
+                    "Accept": "application/json" 
+                },
+                body: JSON.stringify({ url: link, audioFormat: "mp3", isAudioOnly: true })
+            });
+
+            if (!res.ok) {
+                throw new Error("Errore durante la conversione del link.");
             }
+
+            const data = await res.json();
+            
+            if (data.url) {
+                finalAudioUrl = data.url;
+                songTitle = data.filename ? data.filename.replace(/\.[^/.]+$/, "") : "Canzone da YouTube";
+            } else {
+                throw new Error("Impossibile estrarre l'audio. Prova a caricare direttamente il file MP3!");
+            }
+        } else {
+            statusMsg.innerText = "⚠️ Inserisci un link o carica un file!";
+            return;
+        }
+
+        await db.collection("queue").add({
+            title: songTitle,
+            artist: artistName,
+            audioUrl: finalAudioUrl,
+            duration: durationSec,
+            coverUrl: coverUrl,
+            requestedBy: activeUser,
+            requestedById: userId,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        statusMsg.innerText = "✅ Canzone inviata in coda con successo!";
+        document.getElementById("song-link").value = "";
+        fileInput.value = "";
+
+        checkAndAdvanceQueue();
+
+    } catch (err) {
+        console.error(err);
+        statusMsg.innerText = "❌ Errore: " + err.message;
+    }
+}
 
             statusMsg.innerText = "⏳ Elaborazione brano...";
 
