@@ -3,16 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Web Radio (Firebase Storage)</title>
+    <title>JulyFM - Web Radio (Free Hosting)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
 
-    <!-- Firebase SDK Compatibile (App, Firestore e Storage) -->
+    <!-- Firebase SDK Compatibile (Solo Firestore) -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
@@ -51,7 +50,6 @@
             <div id="song-artist" class="song-artist">Radio online</div>
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
-            <!-- LETTORE NATIVO DIRETTAMENTE COLLEGATO -->
             <audio id="radio-player" controls autoplay></audio>
 
             <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
@@ -72,7 +70,7 @@
             </div>
             <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
             <div class="form-group">
-                <label>Carica File Audio su Firebase Storage:</label>
+                <label>Carica File Audio (Hosting temporaneo 1h):</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
             <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
@@ -91,7 +89,6 @@
         };
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
-        const storage = firebase.storage();
 
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
         localStorage.setItem("radio_uid", userId);
@@ -104,15 +101,20 @@
             document.getElementById("enable-audio-btn").style.color = "#fff";
         }
 
-        // UPLOAD DIRETTO SU FIREBASE STORAGE
-        async function uploadToFirebaseStorage(file) {
-            const fileName = `audio/${Date.now()}_${file.name}`;
-            const storageRef = storage.ref(fileName);
-            const snapshot = await storageRef.put(file);
-            return await snapshot.ref.getDownloadURL();
+        // CARICAMENTO GRATUITO SU LITTERBOX (Nessun costo o account richiesto)
+        async function uploadToLitterbox(file) {
+            const formData = new FormData();
+            formData.append("reqtype", "fileupload");
+            formData.append("time", "1h");
+            formData.append("fileToUpload", file);
+
+            const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
+                method: "POST",
+                body: formData
+            });
+            return await res.text();
         }
 
-        // ESTRAZIONE STREAM MP3 DA LINK
         async function processLinkToMp3(link) {
             if (link.includes("soundcloud.com")) {
                 const scRes = await fetch(`https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(link)}`);
@@ -180,14 +182,14 @@
                 };
 
                 if (file) {
-                    statusMsg.innerText = "⏳ Caricamento su Firebase Storage...";
-                    songData.audioUrl = await uploadToFirebaseStorage(file);
+                    statusMsg.innerText = "⏳ Caricamento temporaneo del file...";
+                    songData.audioUrl = await uploadToLitterbox(file);
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
-                    songData.artist = "Upload Firebase";
-                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=Firebase+Storage";
+                    songData.artist = "Upload Locale";
+                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+Locale";
                     songData.duration = 180;
                 } else if (link) {
-                    statusMsg.innerText = "⏳ Recupero audio MP3...";
+                    statusMsg.innerText = "⏳ Conversione audio MP3...";
                     const extracted = await processLinkToMp3(link);
                     songData = { ...songData, ...extracted };
                 } else {
@@ -196,7 +198,7 @@
                 }
 
                 await db.collection("queue").add(songData);
-                statusMsg.innerText = "✅ Canzone inviata con successo!";
+                statusMsg.innerText = "✅ Canzone inviata alla coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
