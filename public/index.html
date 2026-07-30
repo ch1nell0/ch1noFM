@@ -3,62 +3,342 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Twitch Live Radio 24/7</title>
-    <link rel="stylesheet" href="https://desksob.github.io/julyfm/style.css">
+    <title>JulyFM - Twitch Web Radio</title>
     
-    <!-- Firebase SDKs (Versione Compatibile per browser) -->
+    <!-- Google Fonts per stile Moderno / JulyFM -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+
+    <!-- Firebase SDKs -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            background-color: #0d0e12;
+            color: #f1f5f9;
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .main-container {
+            width: 100%;
+            max-width: 580px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* Card Principale Player (Stile JulyFM) */
+        .player-card {
+            background: #16181e;
+            border: 1px solid #272a34;
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }
+
+        .radio-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 16px;
+        }
+
+        .radio-badge .dot {
+            width: 8px;
+            height: 8px;
+            background-color: #ef4444;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .album-cover {
+            width: 180px;
+            height: 180px;
+            border-radius: 12px;
+            object-fit: cover;
+            margin: 0 auto 16px;
+            border: 2px solid #272a34;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+        }
+
+        .song-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 4px;
+            word-break: break-word;
+        }
+
+        .song-artist {
+            font-size: 1rem;
+            color: #94a3b8;
+            margin-bottom: 12px;
+        }
+
+        .requested-by {
+            font-size: 0.85rem;
+            color: #64748b;
+            background: #1e212b;
+            padding: 6px 14px;
+            border-radius: 8px;
+            display: inline-block;
+            margin-bottom: 16px;
+        }
+
+        .requested-by b {
+            color: #38bdf8;
+        }
+
+        audio {
+            width: 100%;
+            margin-bottom: 16px;
+            filter: invert(0.9) hue-rotate(180deg);
+        }
+
+        /* Pulsanti Azione e Skip */
+        .skip-section {
+            background: #1e212b;
+            border-radius: 12px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .skip-btn {
+            background: #6366f1;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            width: 100%;
+        }
+
+        .skip-btn:hover {
+            background: #4f46e5;
+        }
+
+        .voters-list {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            text-align: left;
+        }
+
+        .voters-list span {
+            color: #f3f4f6;
+            font-weight: 600;
+        }
+
+        /* Sezione Coda Canzoni */
+        .queue-card, .request-card {
+            background: #16181e;
+            border: 1px solid #272a34;
+            border-radius: 16px;
+            padding: 20px;
+        }
+
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .queue-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .queue-item {
+            background: #1e212b;
+            padding: 10px 14px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+
+        .queue-item-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .queue-item-title {
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .queue-item-user {
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+
+        .empty-queue {
+            color: #64748b;
+            font-size: 0.85rem;
+            text-align: center;
+            padding: 10px 0;
+        }
+
+        /* Form di Invio Brani */
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 14px;
+        }
+
+        label {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            font-weight: 600;
+        }
+
+        input[type="text"], select, input[type="file"] {
+            background: #1e212b;
+            border: 1px solid #334155;
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            outline: none;
+        }
+
+        input[type="text"]:focus, select:focus {
+            border-color: #6366f1;
+        }
+
+        .submit-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 12px;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+        }
+
+        .submit-btn:hover {
+            background: #059669;
+        }
+
+        #status-msg {
+            margin-top: 10px;
+            font-size: 0.85rem;
+            color: #f59e0b;
+            text-align: center;
+        }
+    </style>
 </head>
 <body>
 
-    <div class="radio-container" style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: sans-serif;">
-        <!-- Banner Radio Stile JulyFM -->
-        <div class="now-playing" style="text-align: center; background: #222; color: #fff; padding: 20px; border-radius: 12px;">
-            <img id="album-cover" src="https://via.placeholder.com/150" alt="Cover" style="width:150px; height:150px; border-radius:12px; object-fit:cover;" />
-            <h2 id="song-title">Radio in Attesa...</h2>
-            <h3 id="song-artist">Invia la prima canzone!</h3>
-            <p>Richiesta da: <b id="requested-by">---</b></p>
-        </div>
+    <div class="main-container">
+        <!-- PLAYER CARD -->
+        <div class="player-card">
+            <div class="radio-badge">
+                <div class="dot"></div> LIVE RADIO
+            </div>
 
-        <audio id="radio-player" preload="auto" style="width: 100%; margin-top: 15px;"></audio>
-
-        <div class="controls" style="margin: 20px 0; text-align: center;">
-            <button id="skip-btn" onclick="voteSkip()" style="padding: 10px 20px; cursor: pointer;">Vota per Skippare (<span id="votes-count">0</span>)</button>
-        </div>
-
-        <hr>
-
-        <!-- Form Richiesta Canzoni -->
-        <div class="request-box" style="background: #111; color: #fff; padding: 20px; border-radius: 12px;">
-            <h3>🎵 Richiedi una Canzone</h3>
+            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
             
-            <div style="margin-bottom: 15px;">
-                <label>Modalità Identità:</label>
+            <div id="song-title" class="song-title">In attesa di brani...</div>
+            <div id="song-artist" class="song-artist">Radio online</div>
+            
+            <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
+
+            <audio id="radio-player" preload="auto" controls></audio>
+
+            <!-- VOTI SKIP E LISTA VOTANTI -->
+            <div class="skip-section">
+                <button class="skip-btn" onclick="voteSkip()">Vota per Saltare Brano (<span id="votes-count">0</span>/<span id="required-votes">1</span>)</button>
+                <div class="voters-list">
+                    Votanti attuali: <span id="voters-names">Nessuno</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- CODA BRANI (QUEUE) -->
+        <div class="queue-card">
+            <div class="section-title">
+                <span>📋 Prossimi Brani in Coda</span>
+                <span style="font-size: 0.8rem; color: #64748b;" id="listeners-count">Ascoltatori attivi: 1</span>
+            </div>
+            <ul id="queue-list" class="queue-list">
+                <li class="empty-queue">La coda è vuota. Aggiungi la prima canzone!</li>
+            </ul>
+        </div>
+
+        <!-- FORM DI RICHIESTA -->
+        <div class="request-card">
+            <div class="section-title">🎵 Richiedi una Canzone</div>
+
+            <div class="form-group">
+                <label>Identità:</label>
                 <select id="user-mode" onchange="updateIdentity()">
                     <option value="anonymous">Anonimo</option>
-                    <option value="twitch">Account Twitch</option>
+                    <option value="twitch">Username Twitch</option>
                 </select>
-                <input type="text" id="twitch-name" placeholder="Il tuo Username Twitch" style="display:none; margin-top:5px; padding: 5px;">
+                <input type="text" id="twitch-name" placeholder="Il tuo nome Twitch..." style="display:none; margin-top:6px;">
             </div>
 
-            <div style="margin-bottom: 15px;">
-                <h4>Opzione 1: Incolla Link (YouTube, SoundCloud, ecc.)</h4>
-                <input type="text" id="song-link" placeholder="Incolla link YouTube/SoundCloud..." style="width: 90%; padding: 8px;">
+            <div class="form-group">
+                <label>Incolla Link (YouTube, SoundCloud, MP3 online):</label>
+                <input type="text" id="song-link" placeholder="https://www.youtube.com/watch?v=...">
             </div>
 
-            <div style="margin-bottom: 15px;">
-                <h4>Opzione 2: Carica File Locale (.mp3, .wav)</h4>
+            <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
+
+            <div class="form-group">
+                <label>Carica File Audio locale:</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
 
-            <button onclick="handleFormSubmit()" style="padding: 10px 20px; cursor:pointer; background: #4CAF50; color: white; border: none; border-radius: 5px;">Invia alla Radio</button>
-            <p id="status-msg" style="color: #ffca28; margin-top: 10px;"></p>
+            <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
+            <div id="status-msg"></div>
         </div>
     </div>
 
     <script>
-        // Sostituisci con il tuo oggetto firebaseConfig dalla Console Firebase!
+        // CONFIGURAZIONE FIREBASE
         const firebaseConfig = {
             apiKey: "IL_TUO_API_KEY",
             authDomain: "ch1nofm.firebaseapp.com",
@@ -70,16 +350,16 @@
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
 
-        // Identificatore univoco locale della sessione browser
+        // Identificatore Univoco LocalStorage
         let userId = localStorage.getItem("radio_uid");
         if (!userId) {
-            userId = "anonimo-" + Math.floor(Math.random() * 1000);
+            userId = "User_" + Math.floor(Math.random() * 8999 + 1000);
             localStorage.setItem("radio_uid", userId);
         }
 
         function updateIdentity() {
             const mode = document.getElementById("user-mode").value;
-            document.getElementById("twitch-name").style.display = (mode === "twitch") ? "inline-block" : "none";
+            document.getElementById("twitch-name").style.display = (mode === "twitch") ? "block" : "none";
         }
 
         function getActiveUserDisplayName() {
@@ -91,11 +371,11 @@
             return userId;
         }
 
-        // --- UPLOAD SU LITTERBOX GRATUITO ---
+        // --- UPLOAD TEMPORANEO SU LITTERBOX ---
         async function uploadToLitterbox(file) {
             const formData = new FormData();
             formData.append("reqtype", "fileupload");
-            formData.append("time", "1h"); // Cancellazione automatica 1 ora
+            formData.append("time", "1h");
             formData.append("fileToUpload", file);
 
             const response = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
@@ -105,7 +385,7 @@
             return await response.text();
         }
 
-        // --- SUBMIT CANZONE ---
+        // --- GESTIONE INVIA CANZONE ---
         async function handleFormSubmit() {
             const statusMsg = document.getElementById("status-msg");
             const link = document.getElementById("song-link").value.trim();
@@ -113,33 +393,32 @@
             const file = fileInput.files[0];
             const activeUser = getActiveUserDisplayName();
 
-            // Check Cooldown
+            // Controllo Cooldown
             const userDoc = await db.collection("users").doc(userId).get();
             if (userDoc.exists && userDoc.data().cooldownUntil) {
                 const cooldownUntil = userDoc.data().cooldownUntil.toMillis();
                 if (Date.now() < cooldownUntil) {
                     const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
-                    statusMsg.innerText = `Devi attendere ancora ${waitSec}s prima di fare un'altra richiesta!`;
+                    statusMsg.innerText = `⏳ Attendi ancora ${waitSec}s per il cooldown!`;
                     return;
                 }
             }
 
-            statusMsg.innerText = "Elaborazione in corso...";
+            statusMsg.innerText = "⏳ Elaborazione brano...";
 
             let finalAudioUrl = "";
             let songTitle = "Traccia Sconosciuta";
             let artistName = "Web Radio";
-            let coverUrl = "https://via.placeholder.com/150";
+            let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
             let durationSec = 180;
 
             try {
                 if (file) {
-                    statusMsg.innerText = "Caricamento file locale...";
+                    statusMsg.innerText = "⏳ Caricamento file locale...";
                     finalAudioUrl = await uploadToLitterbox(file);
                     songTitle = file.name.replace(/\.[^/.]+$/, "");
                 } else if (link) {
-                    statusMsg.innerText = "Analisi link audio...";
-                    // API pubblica di estrazione/conversion per bypassare il backend
+                    statusMsg.innerText = "⏳ Estrazione streaming...";
                     const apiUrl = `https://api.cobalt.tools/api/json`;
                     const res = await fetch(apiUrl, {
                         method: "POST",
@@ -150,16 +429,15 @@
                     
                     if (data.url) {
                         finalAudioUrl = data.url;
-                        songTitle = "Traccia Web";
+                        songTitle = "Traccia Web Link";
                     } else {
-                        throw new Error("Impossibile estrarre l'audio dal link inserito.");
+                        throw new Error("Impossibile estrarre l'audio da questo link.");
                     }
                 } else {
-                    statusMsg.innerText = "Inserisci un link o un file locale!";
+                    statusMsg.innerText = "⚠️ Inserisci un link o carica un file!";
                     return;
                 }
 
-                // Aggiungi alla coda su Firestore
                 await db.collection("queue").add({
                     title: songTitle,
                     artist: artistName,
@@ -171,19 +449,41 @@
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
 
-                statusMsg.innerText = "Canzone aggiunta con successo in coda!";
+                statusMsg.innerText = "✅ Canzone inviata in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
 
-                // Se non c'è nessuna canzone in riproduzione, fai partire l'avanzamento
                 checkAndAdvanceQueue();
 
             } catch (err) {
-                statusMsg.innerText = "Errore: " + err.message;
+                statusMsg.innerText = "❌ Errore: " + err.message;
             }
         }
 
-        // --- AVANZAMENTO AUTOMATICO CODA ---
+        // --- CODA IN TEMPO REALE (LISTEN) ---
+        db.collection("queue").orderBy("createdAt", "asc").onSnapshot(snapshot => {
+            const queueListEl = document.getElementById("queue-list");
+            if (snapshot.empty) {
+                queueListEl.innerHTML = '<li class="empty-queue">La coda è vuota. Aggiungi la prima canzone!</li>';
+                return;
+            }
+
+            let html = "";
+            snapshot.docs.forEach((doc, index) => {
+                const item = doc.data();
+                html += `
+                    <li class="queue-item">
+                        <div class="queue-item-info">
+                            <span class="queue-item-title">#${index + 1} ${item.title}</span>
+                            <span class="queue-item-user">Richiesto da: ${item.requestedBy}</span>
+                        </div>
+                    </li>
+                `;
+            });
+            queueListEl.innerHTML = html;
+        });
+
+        // --- CONTROLLO ED AVANZAMENTO CODA ---
         async function checkAndAdvanceQueue() {
             const currentDoc = await db.collection("radioState").doc("current").get();
             if (!currentDoc.exists()) {
@@ -202,7 +502,6 @@
             const nextSong = nextSongDoc.data();
             const now = firebase.firestore.Timestamp.now();
 
-            // Calcolo Cooldown (2x durata canzone)
             const cooldownSeconds = nextSong.duration * 2;
             const cooldownUntil = firebase.firestore.Timestamp.fromMillis(now.toMillis() + (cooldownSeconds * 1000));
 
@@ -210,37 +509,43 @@
                 cooldownUntil: cooldownUntil
             }, { merge: true });
 
-            // Imposta in riproduzione
             await db.collection("radioState").doc("current").set({
                 ...nextSong,
                 startTime: now,
-                currentSkipVotes: []
+                currentSkipVotes: [],
+                currentSkipVotersNames: []
             });
 
             await nextSongDoc.ref.delete();
         }
 
-        // --- SINCRONIZZAZIONE PLAYBACK AUDIO E CONTROLLO SCADENZA ---
+        // --- RIPRODUZIONE AUDIO E SINCRONIZZAZIONE STATE ---
         const audioPlayer = document.getElementById('radio-player');
         db.collection("radioState").doc("current").onSnapshot(doc => {
             if (!doc.exists()) {
                 audioPlayer.pause();
-                document.getElementById('song-title').innerText = "Radio In Attesa...";
-                document.getElementById('song-artist').innerText = "Invia una canzone per iniziare";
+                document.getElementById('song-title').innerText = "In attesa di brani...";
+                document.getElementById('song-artist').innerText = "Radio online";
+                document.getElementById('requested-by').innerText = "---";
+                document.getElementById('votes-count').innerText = "0";
+                document.getElementById('voters-names').innerText = "Nessuno";
                 return;
             }
 
             const data = doc.data();
             document.getElementById('song-title').innerText = data.title;
             document.getElementById('song-artist').innerText = data.artist;
-            document.getElementById('album-cover').src = data.coverUrl;
+            document.getElementById('album-cover').src = data.coverUrl || "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
             document.getElementById('requested-by').innerText = data.requestedBy;
-            document.getElementById('votes-count').innerText = (data.currentSkipVotes || []).length;
+
+            const votes = data.currentSkipVotes || [];
+            const votersNames = data.currentSkipVotersNames || [];
+            document.getElementById('votes-count').innerText = votes.length;
+            document.getElementById('voters-names').innerText = votersNames.length > 0 ? votersNames.join(", ") : "Nessuno";
 
             if (data.audioUrl && data.startTime) {
                 const elapsedTimeSeconds = (Date.now() - data.startTime.toMillis()) / 1000;
                 
-                // Se la canzone è finita, passa alla prossima
                 if (elapsedTimeSeconds >= data.duration) {
                     advanceQueue();
                 } else {
@@ -255,31 +560,45 @@
             }
         });
 
-        // Controlla e invia Heartbeat presenza ogni 10s per conteggio connessi
+        // --- PRESENZA E VOTI SKIP ---
         setInterval(() => {
             db.collection("presences").doc(userId).set({
                 lastSeen: firebase.firestore.FieldValue.serverTimestamp()
             });
-        }, 10000);
+            updateListenersAndQuorum();
+        }, 8000);
 
-        // --- VOTAZIONI SKIP ---
-        async function voteSkip() {
-            const currentDoc = await db.collection("radioState").doc("current").get();
-            if (!currentDoc.exists()) return;
-
-            await db.collection("radioState").doc("current").update({
-                currentSkipVotes: firebase.firestore.FieldValue.arrayUnion(userId)
-            });
-
-            // Controlla Quorum Skip (Metà + 1 degli utenti attivi)
-            const activeWindow = firebase.firestore.Timestamp.fromMillis(Date.now() - 30000);
+        async function updateListenersAndQuorum() {
+            const activeWindow = firebase.firestore.Timestamp.fromMillis(Date.now() - 20000);
             const presences = await db.collection("presences").where("lastSeen", ">=", activeWindow).get();
             const totalListeners = Math.max(presences.size, 1);
             const requiredVotes = Math.floor(totalListeners / 2) + 1;
 
+            document.getElementById("listeners-count").innerText = `Ascoltatori attivi: ${totalListeners}`;
+            document.getElementById("required-votes").innerText = requiredVotes;
+        }
+
+        async function voteSkip() {
+            const currentDoc = await db.collection("radioState").doc("current").get();
+            if (!currentDoc.exists()) return;
+
+            const activeUser = getActiveUserDisplayName();
             const votes = currentDoc.data().currentSkipVotes || [];
+
+            if (!votes.includes(userId)) {
+                await db.collection("radioState").doc("current").update({
+                    currentSkipVotes: firebase.firestore.FieldValue.arrayUnion(userId),
+                    currentSkipVotersNames: firebase.firestore.FieldValue.arrayUnion(activeUser)
+                });
+            }
+
+            const activeWindow = firebase.firestore.Timestamp.fromMillis(Date.now() - 20000);
+            const presences = await db.collection("presences").where("lastSeen", ">=", activeWindow).get();
+            const totalListeners = Math.max(presences.size, 1);
+            const requiredVotes = Math.floor(totalListeners / 2) + 1;
+
             if (votes.length + 1 >= requiredVotes) {
-                advanceQueue(); // Avanza subito alla prossima canzone
+                advanceQueue();
             }
         }
     </script>
