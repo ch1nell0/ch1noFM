@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Live Radio 24/7</title>
+    <link rel="stylesheet" href="https://desksob.github.io/julyfm/style.css">
+    
+    <!-- Firebase SDKs (Versione Compatibile per browser) -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+</head>
+<body>
+
+    <div class="radio-container" style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: sans-serif;">
+        <!-- Banner Radio Stile JulyFM -->
+        <div class="now-playing" style="text-align: center; background: #222; color: #fff; padding: 20px; border-radius: 12px;">
+            <img id="album-cover" src="https://via.placeholder.com/150" alt="Cover" style="width:150px; height:150px; border-radius:12px; object-fit:cover;" />
+            <h2 id="song-title">Radio in Attesa...</h2>
+            <h3 id="song-artist">Invia la prima canzone!</h3>
+            <p>Richiesta da: <b id="requested-by">---</b></p>
+        </div>
+
+        <audio id="radio-player" preload="auto" style="width: 100%; margin-top: 15px;"></audio>
+
+        <div class="controls" style="margin: 20px 0; text-align: center;">
+            <button id="skip-btn" onclick="voteSkip()" style="padding: 10px 20px; cursor: pointer;">Vota per Skippare (<span id="votes-count">0</span>)</button>
+        </div>
+
+        <hr>
+
+        <!-- Form Richiesta Canzoni -->
+        <div class="request-box" style="background: #111; color: #fff; padding: 20px; border-radius: 12px;">
+            <h3>🎵 Richiedi una Canzone</h3>
+            
+            <div style="margin-bottom: 15px;">
+                <label>Modalità Identità:</label>
+                <select id="user-mode" onchange="updateIdentity()">
+                    <option value="anonymous">Anonimo</option>
+                    <option value="twitch">Account Twitch</option>
+                </select>
+                <input type="text" id="twitch-name" placeholder="Il tuo Username Twitch" style="display:none; margin-top:5px; padding: 5px;">
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <h4>Opzione 1: Incolla Link (YouTube, SoundCloud, ecc.)</h4>
+                <input type="text" id="song-link" placeholder="Incolla link YouTube/SoundCloud..." style="width: 90%; padding: 8px;">
+            </div>
+
+            <div style="margin-bottom: 15px;">
+                <h4>Opzione 2: Carica File Locale (.mp3, .wav)</h4>
+                <input type="file" id="file-input" accept="audio/*">
+            </div>
+
+            <button onclick="handleFormSubmit()" style="padding: 10px 20px; cursor:pointer; background: #4CAF50; color: white; border: none; border-radius: 5px;">Invia alla Radio</button>
+            <p id="status-msg" style="color: #ffca28; margin-top: 10px;"></p>
+        </div>
+    </div>
+
+    <script>
+        // Sostituisci con il tuo oggetto firebaseConfig dalla Console Firebase!
+        const firebaseConfig = {
+            apiKey: "IL_TUO_API_KEY",
+            authDomain: "ch1nofm.firebaseapp.com",
+            projectId: "ch1nofm",
+            storageBucket: "ch1nofm.appspot.com",
+            messagingSenderId: "...",
+            appId: "..."
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        // Identificatore univoco locale della sessione browser
+        let userId = localStorage.getItem("radio_uid");
+        if (!userId) {
+            userId = "anonimo-" + Math.floor(Math.random() * 1000);
+            localStorage.setItem("radio_uid", userId);
+        }
+
+        function updateIdentity() {
+            const mode = document.getElementById("user-mode").value;
+            document.getElementById("twitch-name").style.display = (mode === "twitch") ? "inline-block" : "none";
+        }
+
+        function getActiveUserDisplayName() {
+            const mode = document.getElementById("user-mode").value;
+            if (mode === "twitch") {
+                const name = document.getElementById("twitch-name").value.trim();
+                return name ? name : userId;
+            }
+            return userId;
+        }
+
+        // --- UPLOAD SU LITTERBOX GRATUITO ---
+        async function uploadToLitterbox(file) {
+            const formData = new FormData();
+            formData.append("reqtype", "fileupload");
+            formData.append("time", "1h"); // Cancellazione automatica 1 ora
+            formData.append("fileToUpload", file);
+
+            const response = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
+                method: "POST",
+                body: formData
+            });
+            return await response.text();
+        }
+
+        // --- SUBMIT CANZONE ---
+        async function handleFormSubmit() {
+            const statusMsg = document.getElementById("status-msg");
+            const link = document.getElementById("song-link").value.trim();
+            const fileInput = document.getElementById("file-input");
+            const file = fileInput.files[0];
+            const activeUser = getActiveUserDisplayName();
+
+            // Check Cooldown
+            const userDoc = await db.collection("users").doc(userId).get();
+            if (userDoc.exists && userDoc.data().cooldownUntil) {
+                const cooldownUntil = userDoc.data().cooldownUntil.toMillis();
+                if (Date.now() < cooldownUntil) {
+                    const waitSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
+                    statusMsg.innerText = `Devi attendere ancora ${waitSec}s prima di fare un'altra richiesta!`;
+                    return;
+                }
+            }
+
+            statusMsg.innerText = "Elaborazione in corso...";
+
+            let finalAudioUrl = "";
+            let songTitle = "Traccia Sconosciuta";
+            let artistName = "Web Radio";
+            let coverUrl = "https://via.placeholder.com/150";
+            let durationSec = 180;
+
+            try {
+                if (file) {
+                    statusMsg.innerText = "Caricamento file locale...";
+                    finalAudioUrl = await uploadToLitterbox(file);
+                    songTitle = file.name.replace(/\.[^/.]+$/, "");
+                } else if (link) {
+                    statusMsg.innerText = "Analisi link audio...";
+                    // API pubblica di estrazione/conversion per bypassare il backend
+                    const apiUrl = `https://api.cobalt.tools/api/json`;
+                    const res = await fetch(apiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                        body: JSON.stringify({ url: link, audioFormat: "mp3", isAudioOnly: true })
+                    });
+                    const data = await res.json();
+                    
+                    if (data.url) {
+                        finalAudioUrl = data.url;
+                        songTitle = "Traccia Web";
+                    } else {
+                        throw new Error("Impossibile estrarre l'audio dal link inserito.");
+                    }
+                } else {
+                    statusMsg.innerText = "Inserisci un link o un file locale!";
+                    return;
+                }
+
+                // Aggiungi alla coda su Firestore
+                await db.collection("queue").add({
+                    title: songTitle,
+                    artist: artistName,
+                    audioUrl: finalAudioUrl,
+                    duration: durationSec,
+                    coverUrl: coverUrl,
+                    requestedBy: activeUser,
+                    requestedById: userId,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                statusMsg.innerText = "Canzone aggiunta con successo in coda!";
+                document.getElementById("song-link").value = "";
+                fileInput.value = "";
+
+                // Se non c'è nessuna canzone in riproduzione, fai partire l'avanzamento
+                checkAndAdvanceQueue();
+
+            } catch (err) {
+                statusMsg.innerText = "Errore: " + err.message;
+            }
+        }
+
+        // --- AVANZAMENTO AUTOMATICO CODA ---
+        async function checkAndAdvanceQueue() {
+            const currentDoc = await db.collection("radioState").doc("current").get();
+            if (!currentDoc.exists()) {
+                advanceQueue();
+            }
+        }
+
+        async function advanceQueue() {
+            const queueSnapshot = await db.collection("queue").orderBy("createdAt", "asc").limit(1).get();
+            if (queueSnapshot.empty) {
+                await db.collection("radioState").doc("current").delete();
+                return;
+            }
+
+            const nextSongDoc = queueSnapshot.docs[0];
+            const nextSong = nextSongDoc.data();
+            const now = firebase.firestore.Timestamp.now();
+
+            // Calcolo Cooldown (2x durata canzone)
+            const cooldownSeconds = nextSong.duration * 2;
+            const cooldownUntil = firebase.firestore.Timestamp.fromMillis(now.toMillis() + (cooldownSeconds * 1000));
+
+            await db.collection("users").doc(nextSong.requestedById).set({
+                cooldownUntil: cooldownUntil
+            }, { merge: true });
+
+            // Imposta in riproduzione
+            await db.collection("radioState").doc("current").set({
+                ...nextSong,
+                startTime: now,
+                currentSkipVotes: []
+            });
+
+            await nextSongDoc.ref.delete();
+        }
+
+        // --- SINCRONIZZAZIONE PLAYBACK AUDIO E CONTROLLO SCADENZA ---
+        const audioPlayer = document.getElementById('radio-player');
+        db.collection("radioState").doc("current").onSnapshot(doc => {
+            if (!doc.exists()) {
+                audioPlayer.pause();
+                document.getElementById('song-title').innerText = "Radio In Attesa...";
+                document.getElementById('song-artist').innerText = "Invia una canzone per iniziare";
+                return;
+            }
+
+            const data = doc.data();
+            document.getElementById('song-title').innerText = data.title;
+            document.getElementById('song-artist').innerText = data.artist;
+            document.getElementById('album-cover').src = data.coverUrl;
+            document.getElementById('requested-by').innerText = data.requestedBy;
+            document.getElementById('votes-count').innerText = (data.currentSkipVotes || []).length;
+
+            if (data.audioUrl && data.startTime) {
+                const elapsedTimeSeconds = (Date.now() - data.startTime.toMillis()) / 1000;
+                
+                // Se la canzone è finita, passa alla prossima
+                if (elapsedTimeSeconds >= data.duration) {
+                    advanceQueue();
+                } else {
+                    if (audioPlayer.src !== data.audioUrl) {
+                        audioPlayer.src = data.audioUrl;
+                    }
+                    if (Math.abs(audioPlayer.currentTime - elapsedTimeSeconds) > 1.5) {
+                        audioPlayer.currentTime = elapsedTimeSeconds;
+                    }
+                    audioPlayer.play().catch(() => {});
+                }
+            }
+        });
+
+        // Controlla e invia Heartbeat presenza ogni 10s per conteggio connessi
+        setInterval(() => {
+            db.collection("presences").doc(userId).set({
+                lastSeen: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        }, 10000);
+
+        // --- VOTAZIONI SKIP ---
+        async function voteSkip() {
+            const currentDoc = await db.collection("radioState").doc("current").get();
+            if (!currentDoc.exists()) return;
+
+            await db.collection("radioState").doc("current").update({
+                currentSkipVotes: firebase.firestore.FieldValue.arrayUnion(userId)
+            });
+
+            // Controlla Quorum Skip (Metà + 1 degli utenti attivi)
+            const activeWindow = firebase.firestore.Timestamp.fromMillis(Date.now() - 30000);
+            const presences = await db.collection("presences").where("lastSeen", ">=", activeWindow).get();
+            const totalListeners = Math.max(presences.size, 1);
+            const requiredVotes = Math.floor(totalListeners / 2) + 1;
+
+            const votes = currentDoc.data().currentSkipVotes || [];
+            if (votes.length + 1 >= requiredVotes) {
+                advanceQueue(); // Avanza subito alla prossima canzone
+            }
+        }
+    </script>
+</body>
+</html>
