@@ -3,6 +3,209 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JulyFM - Web Radio</title>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+        body { background: #0d0e12; color: #fff; display: flex; justify-content: center; padding: 20px; }
+        .box { width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 15px; }
+        .card { background: #16181e; border: 1px solid #272a34; border-radius: 12px; padding: 18px; text-align: center; }
+        img { width: 140px; height: 140px; border-radius: 8px; object-fit: cover; margin-bottom: 10px; }
+        audio { width: 100%; margin: 10px 0; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 8px; border-radius: 6px; border: 1px solid #334155; background: #1e212b; color: #fff; }
+        button { background: #10b981; font-weight: bold; border: none; cursor: pointer; margin-top: 12px; }
+        button:hover { background: #059669; }
+        .queue-item { background: #1e212b; padding: 8px; border-radius: 6px; margin-top: 5px; text-align: left; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <!-- 1. PLAYER -->
+        <div class="card">
+            <h3 style="color: #ef4444; margin-bottom: 8px;">🔴 LIVE RADIO</h3>
+            <img id="cover" src="https://via.placeholder.com/140/16181e/64748b?text=JulyFM">
+            <h4 id="title">In attesa...</h4>
+            <p id="artist" style="color: #94a3b8; font-size: 0.9rem;">---</p>
+            <audio id="player" controls></audio>
+            <button onclick="voteSkip()" style="background:#6366f1;">Vota Skip (<span id="votes">0</span>)</button>
+        </div>
+
+        <!-- 2. CODA -->
+        <div class="card" style="text-align:left;">
+            <h4>📋 Prossimi Brani</h4>
+            <div id="queue">Nessun brano in coda</div>
+        </div>
+
+        <!-- 3. UNICO FORM -->
+        <div class="card" style="text-align:left;">
+            <h4>🎵 Aggiungi Brano</h4>
+            
+            <label style="font-size:0.8rem; color:#94a3b8;">Identità:</label>
+            <select id="user-mode" onchange="toggleTwitch()">
+                <option value="anon">Anonimo</option>
+                <option value="twitch">Twitch</option>
+            </select>
+            <input type="text" id="twitch-name" placeholder="Nome Twitch" style="display:none;">
+
+            <label style="font-size:0.8rem; color:#94a3b8; margin-top:10px; display:block;">Link (YouTube / Audio direct):</label>
+            <input type="text" id="link" placeholder="https://...">
+
+            <label style="font-size:0.8rem; color:#94a3b8; margin-top:10px; display:block;">Oppure File Audio:</label>
+            <input type="file" id="file" accept="audio/*">
+
+            <button onclick="sendSong()">Invia Brano</button>
+            <p id="status" style="font-size:0.8rem; color:#f59e0b; margin-top:8px; text-align:center;"></p>
+        </div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBUwe1HzAUTn5xVs7af_w2SaUXzyvUKJM4",
+            authDomain: "ch1nofm.firebaseapp.com",
+            projectId: "ch1nofm",
+            storageBucket: "ch1nofm.firebasestorage.app",
+            messagingSenderId: "536090181047",
+            appId: "1:536090181047:web:b159ecacb465fbae767c32"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        let uid = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
+        localStorage.setItem("radio_uid", uid);
+
+        function toggleTwitch() {
+            document.getElementById("twitch-name").style.display = 
+                document.getElementById("user-mode").value === "twitch" ? "block" : "none";
+        }
+
+        async function uploadFile(f) {
+            const data = new FormData();
+            data.append("reqtype", "fileupload");
+            data.append("time", "1h");
+            data.append("fileToUpload", f);
+            const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", { method: "POST", body: data });
+            return await res.text();
+        }
+
+        async function sendSong() {
+            const st = document.getElementById("status");
+            const linkVal = document.getElementById("link").value.trim();
+            const fileVal = document.getElementById("file").files[0];
+            const userMode = document.getElementById("user-mode").value;
+            const twName = document.getElementById("twitch-name").value.trim();
+            const username = userMode === "twitch" && twName ? twName : uid;
+
+            st.innerText = "⏳ Elaborazione...";
+            let url = "", title = "Audio Track", cover = "https://via.placeholder.com/140/16181e/64748b?text=JulyFM";
+
+            try {
+                if (fileVal) {
+                    url = await uploadFile(fileVal);
+                    title = fileVal.name;
+                } else if (linkVal) {
+                    url = linkVal;
+                    if (linkVal.includes("youtube.com") || linkVal.includes("youtu.be")) {
+                        const m = linkVal.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/);
+                        if (m && m[2].length === 11) {
+                            cover = `https://i.ytimg.com/vi/${m[2]}/hqdefault.jpg`;
+                        }
+                    }
+                } else {
+                    st.innerText = "⚠️ Inserisci un link o un file!";
+                    return;
+                }
+
+                await db.collection("queue").add({
+                    title: String(title),
+                    artist: "Web Radio",
+                    audioUrl: String(url),
+                    duration: 180,
+                    coverUrl: String(cover),
+                    requestedBy: String(username),
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                st.innerText = "✅ Inviato!";
+                document.getElementById("link").value = "";
+                document.getElementById("file").value = "";
+                checkAdvance();
+            } catch (e) {
+                st.innerText = "❌ Errore: " + e.message;
+            }
+        }
+
+        db.collection("queue").orderBy("createdAt", "asc").onSnapshot(snap => {
+            const q = document.getElementById("queue");
+            if (snap.empty) { q.innerHTML = "La coda è vuota"; return; }
+            q.innerHTML = snap.docs.map((d, i) => `<div class="queue-item">#${i+1} <b>${d.data().title}</b> (${d.data().requestedBy})</div>`).join("");
+        });
+
+        async function checkAdvance() {
+            const cur = await db.collection("radioState").doc("current").get();
+            if (!cur.exists()) advance();
+        }
+
+        async function advance() {
+            const snap = await db.collection("queue").orderBy("createdAt", "asc").limit(1).get();
+            if (snap.empty) {
+                await db.collection("radioState").doc("current").delete();
+                return;
+            }
+            const doc = snap.docs[0];
+            await db.collection("radioState").doc("current").set({
+                ...doc.data(),
+                startTime: firebase.firestore.Timestamp.now(),
+                votes: []
+            });
+            await doc.ref.delete();
+        }
+
+        const audio = document.getElementById("player");
+        db.collection("radioState").doc("current").onSnapshot(doc => {
+            if (!doc.exists()) {
+                audio.pause();
+                document.getElementById("title").innerText = "In attesa...";
+                document.getElementById("artist").innerText = "---";
+                return;
+            }
+            const d = doc.data();
+            document.getElementById("title").innerText = d.title;
+            document.getElementById("artist").innerText = "Richiesto da: " + d.requestedBy;
+            document.getElementById("cover").src = d.coverUrl;
+            document.getElementById("votes").innerText = (d.votes || []).length;
+
+            if (d.audioUrl && d.startTime) {
+                const elapsed = (Date.now() - d.startTime.toMillis()) / 1000;
+                if (elapsed >= d.duration) {
+                    advance();
+                } else {
+                    if (audio.src !== d.audioUrl) audio.src = d.audioUrl;
+                    if (Math.abs(audio.currentTime - elapsed) > 2) audio.currentTime = elapsed;
+                    audio.play().catch(() => {});
+                }
+            }
+        });
+
+        async function voteSkip() {
+            const cur = await db.collection("radioState").doc("current").get();
+            if (!cur.exists()) return;
+            const votes = cur.data().votes || [];
+            if (!votes.includes(uid)) {
+                await db.collection("radioState").doc("current").update({
+                    votes: firebase.firestore.FieldValue.arrayUnion(uid)
+                });
+            }
+            if (votes.length + 1 >= 2) advance();
+        }
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JulyFM - Twitch Web Radio</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
