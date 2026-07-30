@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Twitch Web Radio</title>
+    <title>JulyFM - Web Radio</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,7 +12,7 @@
     <!-- Firebase SDK Compatibile -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-    <!-- YouTube IFrame Player API -->
+    <!-- YouTube IFrame API -->
     <script src="https://www.youtube.com/iframe_api"></script>
 
     <style>
@@ -91,7 +91,7 @@
         }
 
         .song-title {
-            font-size: 1.4rem;
+            font-size: 1.3rem;
             font-weight: 700;
             color: #ffffff;
             margin-bottom: 4px;
@@ -99,7 +99,7 @@
         }
 
         .song-artist {
-            font-size: 1rem;
+            font-size: 0.95rem;
             color: #94a3b8;
             margin-bottom: 12px;
         }
@@ -118,20 +118,20 @@
             color: #38bdf8;
         }
 
-        audio {
+        #sc-player-container, #yt-player-wrapper {
             width: 100%;
-            margin-bottom: 16px;
-            filter: invert(0.9) hue-rotate(180deg);
-        }
-
-        #yt-player-wrapper {
-            width: 100%;
-            height: 200px;
+            height: 166px;
             margin-bottom: 16px;
             border-radius: 12px;
             overflow: hidden;
             background: #000;
             display: none;
+        }
+
+        audio {
+            width: 100%;
+            margin-bottom: 16px;
+            filter: invert(0.9) hue-rotate(180deg);
         }
 
         .skip-section {
@@ -153,7 +153,6 @@
             cursor: pointer;
             transition: background 0.2s;
             width: 100%;
-            font-size: 0.95rem;
         }
 
         .skip-btn:hover {
@@ -164,11 +163,6 @@
             font-size: 0.8rem;
             color: #94a3b8;
             text-align: left;
-        }
-
-        .voters-list span {
-            color: #f3f4f6;
-            font-weight: 600;
         }
 
         .section-title {
@@ -197,11 +191,6 @@
             justify-content: space-between;
             align-items: center;
             font-size: 0.9rem;
-        }
-
-        .queue-item-info {
-            display: flex;
-            flex-direction: column;
         }
 
         .queue-item-title {
@@ -244,10 +233,6 @@
             outline: none;
         }
 
-        input[type="text"]:focus, select:focus {
-            border-color: #6366f1;
-        }
-
         .submit-btn {
             background: #10b981;
             color: white;
@@ -257,11 +242,6 @@
             font-weight: 700;
             cursor: pointer;
             width: 100%;
-            transition: background 0.2s;
-        }
-
-        .submit-btn:hover {
-            background: #059669;
         }
 
         #status-msg {
@@ -269,19 +249,25 @@
             font-size: 0.85rem;
             color: #f59e0b;
             text-align: center;
-            word-break: break-word;
         }
 
         .start-audio-btn {
             background: #f59e0b;
             color: #000;
             border: none;
-            padding: 10px 16px;
+            padding: 12px;
             border-radius: 8px;
-            font-weight: 700;
+            font-weight: 800;
             cursor: pointer;
             width: 100%;
             margin-bottom: 16px;
+            animation: pulse-bg 2s infinite;
+        }
+
+        @keyframes pulse-bg {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+            100% { transform: scale(1); }
         }
     </style>
 </head>
@@ -290,7 +276,7 @@
     <div class="main-container">
         <!-- PLAYER -->
         <div class="player-card">
-            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 Clicca qui per Abilitare/Avviare l'Audio</button>
+            <button class="start-audio-btn" id="enable-audio-btn" onclick="unlockAudioEngine()">⚡ SBLOCCA AUDIO / AVVIA STREAM ⚡</button>
 
             <div class="radio-badge">
                 <div class="dot"></div> LIVE RADIO
@@ -303,26 +289,28 @@
             
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
 
-            <!-- YouTube Iframe Wrapper -->
+            <!-- YouTube Iframe -->
             <div id="yt-player-wrapper">
                 <div id="yt-player"></div>
             </div>
 
-            <!-- Native Audio Player per MP3 -->
+            <!-- SoundCloud Iframe -->
+            <div id="sc-player-container">
+                <iframe id="sc-iframe" width="100%" height="166" scrolling="no" frameborder="no" allow="autoplay" src=""></iframe>
+            </div>
+
+            <!-- Native Audio Player per MP3 Direct -->
             <audio id="radio-player" controls style="display:none;"></audio>
 
             <div class="skip-section">
                 <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
-                <div class="voters-list">
-                    Votanti: <span id="voters-names">Nessuno</span> (<span id="votes-count">0</span>/<span id="required-votes">1</span>)
-                </div>
             </div>
         </div>
 
         <!-- CODA BRANI -->
         <div class="queue-card">
             <div class="section-title">
-                <span>📋 Prossimi Brani in Coda</span>
+                <span>📋 Coda Brani</span>
                 <span style="font-size: 0.8rem; color: #64748b;" id="listeners-count">Ascoltatori attivi: 1</span>
             </div>
             <ul id="queue-list" class="queue-list">
@@ -344,8 +332,8 @@
             </div>
 
             <div class="form-group">
-                <label>Incolla Link (YouTube, Direct MP3):</label>
-                <input type="text" id="song-link" placeholder="https://www.youtube.com/watch?v=...">
+                <label>Link (YouTube, SoundCloud, MP3 diretto):</label>
+                <input type="text" id="song-link" placeholder="Incolla l'URL qui...">
             </div>
 
             <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
@@ -381,34 +369,29 @@
 
         let ytPlayer = null;
         let isYtReady = false;
-        let currentVideoId = null;
+        let currentTrackId = null;
 
         function onYouTubeIframeAPIReady() {
             ytPlayer = new YT.Player('yt-player', {
                 height: '100%',
                 width: '100%',
-                playerVars: {
-                    'autoplay': 1,
-                    'controls': 1,
-                    'origin': window.location.origin
-                },
-                events: {
-                    'onReady': () => { 
-                        isYtReady = true; 
-                    }
-                }
+                playerVars: { 'autoplay': 1, 'controls': 1 },
+                events: { 'onReady': () => { isYtReady = true; } }
             });
         }
 
-        function enableAudio() {
+        // SBLOCCO UNIFICATO DELL'AUDIO ENGINE
+        function unlockAudioEngine() {
             const audioPlayer = document.getElementById('radio-player');
             audioPlayer.play().catch(() => {});
             if (ytPlayer && isYtReady && typeof ytPlayer.playVideo === 'function') {
                 ytPlayer.playVideo();
             }
-            document.getElementById("enable-audio-btn").innerText = "✅ Audio Abilitato";
-            document.getElementById("enable-audio-btn").style.background = "#10b981";
-            document.getElementById("enable-audio-btn").style.color = "#ffffff";
+            const btn = document.getElementById("enable-audio-btn");
+            btn.innerText = "✅ AUDIO ENGINE ATTIVO";
+            btn.style.background = "#10b981";
+            btn.style.color = "#ffffff";
+            btn.style.animation = "none";
         }
 
         function updateIdentity() {
@@ -425,7 +408,6 @@
             return userId;
         }
 
-        // Litterbox Upload
         async function uploadToLitterbox(file) {
             const formData = new FormData();
             formData.append("reqtype", "fileupload");
@@ -439,36 +421,66 @@
             return await response.text();
         }
 
-        // Estrazione dettagli YouTube
-        async function getYouTubeDetails(link) {
-            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-            const match = link.match(regExp);
-
-            if (!match || match[2].length !== 11) {
-                throw new Error("URL YouTube non valido.");
-            }
-
-            const videoId = match[2];
-            
-            try {
-                const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+        // SCRAPING METADATI OTTIMIZZATO (YouTube + SoundCloud oEmbed)
+        async function fetchMetadata(link) {
+            if (link.includes("soundcloud.com")) {
+                const res = await fetch(`https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(link)}`);
+                if (!res.ok) throw new Error("Impossibile recuperare metadati da SoundCloud.");
                 const data = await res.json();
+                
+                // Estrazione pulita del Titolo e dell'Artista
+                let title = data.title || "Traccia SoundCloud";
+                let artist = data.author_name || "SoundCloud";
+
+                if (title.includes("by")) {
+                    const parts = title.split("by");
+                    title = parts[0].trim();
+                    artist = parts[1].trim();
+                }
+
                 return {
-                    videoId: videoId,
-                    type: "youtube",
-                    title: data.title || "Traccia YouTube",
-                    artist: data.author_name || "YouTube",
-                    coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    type: "soundcloud",
+                    url: link,
+                    title: title,
+                    artist: artist,
+                    coverUrl: data.thumbnail_url || "https://via.placeholder.com/180/16181e/64748b?text=SoundCloud",
                     duration: 240
                 };
-            } catch (e) {
+            } else if (link.includes("youtube.com") || link.includes("youtu.be")) {
+                const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+                const match = link.match(regExp);
+                if (!match || match[2].length !== 11) throw new Error("URL YouTube non valido.");
+                const videoId = match[2];
+
+                try {
+                    const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+                    const data = await res.json();
+                    return {
+                        type: "youtube",
+                        videoId: videoId,
+                        title: data.title || "Traccia YouTube",
+                        artist: data.author_name || "YouTube",
+                        coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                        duration: 240
+                    };
+                } catch (e) {
+                    return {
+                        type: "youtube",
+                        videoId: videoId,
+                        title: "Traccia YouTube",
+                        artist: "YouTube",
+                        coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                        duration: 240
+                    };
+                }
+            } else {
                 return {
-                    videoId: videoId,
-                    type: "youtube",
-                    title: "Traccia YouTube",
-                    artist: "YouTube",
-                    coverUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                    duration: 240
+                    type: "direct",
+                    audioUrl: link,
+                    title: "Link Audio Esterno",
+                    artist: "Sconosciuto",
+                    coverUrl: "https://via.placeholder.com/180/16181e/64748b?text=Audio",
+                    duration: 180
                 };
             }
         }
@@ -481,59 +493,45 @@
             const file = fileInput.files[0];
             const activeUser = getActiveUserDisplayName();
 
-            statusMsg.innerText = "⏳ Inizio elaborazione brano...";
-
-            let songData = {
-                type: "direct",
-                audioUrl: "",
-                title: "Traccia Audio",
-                artist: "Web Radio",
-                coverUrl: "https://via.placeholder.com/180/16181e/64748b?text=JulyFM",
-                duration: 180,
-                requestedBy: String(activeUser),
-                requestedById: String(userId),
-                createdAt: firebase.firestore.FieldValue.serverTimestamp()
-            };
+            statusMsg.innerText = "⏳ Recupero metadati e preparazioni...";
 
             try {
+                let songData = {
+                    requestedBy: String(activeUser),
+                    requestedById: String(userId),
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+
                 if (file) {
                     statusMsg.innerText = "⏳ Caricamento file locale...";
-                    songData.audioUrl = await uploadToLitterbox(file);
+                    const uploadedUrl = await uploadToLitterbox(file);
+                    songData.type = "direct";
+                    songData.audioUrl = uploadedUrl;
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
+                    songData.artist = activeUser;
+                    songData.coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=File+Locale";
+                    songData.duration = 180;
                 } else if (link) {
-                    if (link.includes("youtube.com") || link.includes("youtu.be")) {
-                        statusMsg.innerText = "⏳ Recupero dati da YouTube...";
-                        const ytData = await getYouTubeDetails(link);
-                        songData.type = "youtube";
-                        songData.videoId = ytData.videoId;
-                        songData.title = ytData.title;
-                        songData.artist = ytData.artist;
-                        songData.coverUrl = ytData.coverUrl;
-                        songData.duration = ytData.duration;
-                    } else {
-                        songData.audioUrl = link;
-                        songData.title = "Link Audio Esterno";
-                    }
+                    const meta = await fetchMetadata(link);
+                    songData = { ...songData, ...meta };
                 } else {
-                    statusMsg.innerText = "⚠️ Inserisci un link o carica un file!";
+                    statusMsg.innerText = "⚠️ Inserisci un link o un file!";
                     return;
                 }
 
                 await db.collection("queue").add(songData);
-
-                statusMsg.innerText = "✅ Canzone inviata in coda!";
+                statusMsg.innerText = "✅ Canzone aggiunta in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
 
                 forceCheckQueue();
-
             } catch (err) {
                 console.error(err);
                 statusMsg.innerText = "❌ Errore: " + err.message;
             }
         }
 
-        // LISTEN CODA IN TEMPO REALE
+        // GESTIONE CODA
         db.collection("queue").orderBy("createdAt", "asc").onSnapshot(snapshot => {
             const queueListEl = document.getElementById("queue-list");
             if (snapshot.empty) {
@@ -548,7 +546,7 @@
                     <li class="queue-item">
                         <div class="queue-item-info">
                             <span class="queue-item-title">#${index + 1} ${item.title || "Traccia"}</span>
-                            <span class="queue-item-user">Richiesto da: ${item.requestedBy || "Anonimo"}</span>
+                            <span class="queue-item-user">di ${item.artist || "Artista"} | Richiesto da: ${item.requestedBy || "Anonimo"}</span>
                         </div>
                     </li>
                 `;
@@ -575,58 +573,52 @@
 
             await db.collection("radioState").doc("current").set({
                 ...nextSong,
-                startTime: firebase.firestore.FieldValue.serverTimestamp(),
-                currentSkipVotes: [],
-                currentSkipVotersNames: []
+                startTime: firebase.firestore.FieldValue.serverTimestamp()
             });
 
             await nextSongDoc.ref.delete();
         }
 
-        // SKIP FORZATO / IMMEDIATO
         async function forceSkip() {
             await advanceQueue();
         }
 
-        // HEARTBEAT AUTOMATICO DI AVANZAMENTO
         setInterval(async () => {
             const currentDoc = await db.collection("radioState").doc("current").get();
             if (!currentDoc.exists()) {
                 const queueSnapshot = await db.collection("queue").limit(1).get();
-                if (!queueSnapshot.empty) {
-                    advanceQueue();
-                }
+                if (!queueSnapshot.empty) advanceQueue();
             } else {
                 const data = currentDoc.data();
                 if (data.startTime) {
-                    const elapsedTimeSeconds = (Date.now() - data.startTime.toMillis()) / 1000;
-                    if (elapsedTimeSeconds >= data.duration) {
-                        advanceQueue();
-                    }
+                    const elapsedTime = (Date.now() - data.startTime.toMillis()) / 1000;
+                    if (elapsedTime >= data.duration) advanceQueue();
                 }
             }
         }, 4000);
 
-        // PLAYER ENGINE
+        // MOTOR PLAYER CENTRALIZZATO
         const audioPlayer = document.getElementById('radio-player');
         const ytWrapper = document.getElementById('yt-player-wrapper');
+        const scContainer = document.getElementById('sc-player-container');
+        const scIframe = document.getElementById('sc-iframe');
 
         db.collection("radioState").doc("current").onSnapshot(doc => {
             if (!doc.exists()) {
                 audioPlayer.pause();
                 audioPlayer.style.display = "none";
                 ytWrapper.style.display = "none";
+                scContainer.style.display = "none";
                 document.getElementById('album-cover').style.display = "block";
 
                 if (ytPlayer && isYtReady && typeof ytPlayer.stopVideo === 'function') {
                     ytPlayer.stopVideo();
                 }
+                scIframe.src = "";
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
                 document.getElementById('requested-by').innerText = "---";
-                document.getElementById('votes-count').innerText = "0";
-                document.getElementById('voters-names').innerText = "Nessuno";
-                currentVideoId = null;
+                currentTrackId = null;
                 return;
             }
 
@@ -636,31 +628,36 @@
             document.getElementById('album-cover').src = data.coverUrl || "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
             document.getElementById('requested-by').innerText = data.requestedBy;
 
-            const votes = data.currentSkipVotes || [];
-            const votersNames = data.currentSkipVotersNames || [];
-            document.getElementById('votes-count').innerText = votes.length;
-            document.getElementById('voters-names').innerText = votersNames.length > 0 ? votersNames.join(", ") : "Nessuno";
-
             if (data.startTime) {
                 const elapsedTimeSeconds = Math.max(0, (Date.now() - data.startTime.toMillis()) / 1000);
-                
-                if (data.type === "youtube" && data.videoId) {
+
+                if (data.type === "soundcloud") {
                     audioPlayer.pause();
                     audioPlayer.style.display = "none";
+                    ytWrapper.style.display = "none";
+                    document.getElementById('album-cover').style.display = "none";
+                    scContainer.style.display = "block";
+
+                    if (currentTrackId !== data.url) {
+                        currentTrackId = data.url;
+                        scIframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(data.url)}&auto_play=true&show_artwork=true`;
+                    }
+                } else if (data.type === "youtube" && data.videoId) {
+                    audioPlayer.pause();
+                    audioPlayer.style.display = "none";
+                    scContainer.style.display = "none";
                     document.getElementById('album-cover').style.display = "none";
                     ytWrapper.style.display = "block";
 
                     if (ytPlayer && isYtReady) {
-                        if (currentVideoId !== data.videoId) {
-                            currentVideoId = data.videoId;
+                        if (currentTrackId !== data.videoId) {
+                            currentTrackId = data.videoId;
                             ytPlayer.loadVideoById(data.videoId, elapsedTimeSeconds);
                         }
                     }
                 } else if (data.audioUrl) {
-                    if (ytPlayer && isYtReady && typeof ytPlayer.stopVideo === 'function') {
-                        ytPlayer.stopVideo();
-                    }
                     ytWrapper.style.display = "none";
+                    scContainer.style.display = "none";
                     document.getElementById('album-cover').style.display = "block";
                     audioPlayer.style.display = "block";
 
@@ -680,17 +677,7 @@
             db.collection("presences").doc(userId).set({
                 lastSeen: firebase.firestore.FieldValue.serverTimestamp()
             });
-            updateListenersAndQuorum();
         }, 5000);
-
-        async function updateListenersAndQuorum() {
-            const activeWindow = firebase.firestore.Timestamp.fromMillis(Date.now() - 15000);
-            const presences = await db.collection("presences").where("lastSeen", ">=", activeWindow).get();
-            const totalListeners = Math.max(presences.size, 1);
-
-            document.getElementById("listeners-count").innerText = `Ascoltatori attivi: ${totalListeners}`;
-            document.getElementById("required-votes").innerText = "1";
-        }
     </script>
 </body>
 </html>
