@@ -386,7 +386,8 @@
         }
 
 // --- GESTIONE INVIA CANZONE (CON PROXY CORS E API YT) ---
-async function handleFormSubmit() {
+// --- GESTIONE INVIA CANZONE (API DIRETTA YOUTUBE SENZA BLOCCHI CORS) ---
+    async function handleFormSubmit() {
     const statusMsg = document.getElementById("status-msg");
     const link = document.getElementById("song-link").value.trim();
     const fileInput = document.getElementById("file-input");
@@ -403,6 +404,79 @@ async function handleFormSubmit() {
             return;
         }
     }
+
+    statusMsg.innerText = "⏳ Elaborazione brano...";
+
+    let finalAudioUrl = "";
+    let songTitle = "Traccia Sconosciuta";
+    let artistName = "YouTube Live";
+    let coverUrl = "https://via.placeholder.com/180/16181e/64748b?text=JulyFM";
+    let durationSec = 180;
+
+    try {
+        if (file) {
+            statusMsg.innerText = "⏳ Caricamento file locale...";
+            finalAudioUrl = await uploadToLitterbox(file);
+            songTitle = file.name.replace(/\.[^/.]+$/, "");
+        } else if (link) {
+            statusMsg.innerText = "⏳ Estrazione audio da YouTube...";
+
+            // Estraiamo l'ID del video dal link di YouTube
+            let videoId = "";
+            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const match = link.match(regExp);
+
+            if (match && match[2].length === 11) {
+                videoId = match[2];
+            } else {
+                throw new Error("Link YouTube non valido. Inserisci un URL di un video valido.");
+            }
+
+            // Chiamiamo un'istanza pubblica Piped/Invidious per ottenere streaming e metadata
+            const response = await fetch(`https://pipedapi.kavin.rocks/streams/${videoId}`);
+            if (!response.ok) {
+                throw new Error("Impossibile contattare il server YouTube.");
+            }
+
+            const data = await response.json();
+            
+            // Prendiamo il primo flusso audio disponibile
+            if (data.audioStreams && data.audioStreams.length > 0) {
+                finalAudioUrl = data.audioStreams[0].url;
+                songTitle = data.title || "Canzone YouTube";
+                artistName = data.uploader || "YouTube";
+                coverUrl = data.thumbnailUrl || coverUrl;
+                durationSec = data.duration || 180;
+            } else {
+                throw new Error("Impossibile estrarre lo stream audio da questo video.");
+            }
+        } else {
+            statusMsg.innerText = "⚠️ Inserisci un link o carica un file!";
+            return;
+        }
+
+        await db.collection("queue").add({
+            title: songTitle,
+            artist: artistName,
+            audioUrl: finalAudioUrl,
+            duration: parseInt(durationSec, 10),
+            coverUrl: coverUrl,
+            requestedBy: activeUser,
+            requestedById: userId,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        statusMsg.innerText = "✅ Canzone inviata in coda con successo!";
+        document.getElementById("song-link").value = "";
+        fileInput.value = "";
+
+        checkAndAdvanceQueue();
+
+    } catch (err) {
+        console.error(err);
+        statusMsg.innerText = "❌ Errore: " + err.message;
+    }
+}
 
     statusMsg.innerText = "⏳ Elaborazione brano...";
 
