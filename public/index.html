@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JulyFM - Web Radio</title>
-    
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
@@ -12,6 +12,7 @@
     <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
@@ -34,6 +35,7 @@
         label { font-size: 0.85rem; color: #94a3b8; font-weight: 600; }
         input[type="text"], input[type="file"] { background: #1e212b; border: 1px solid #334155; color: white; padding: 10px; border-radius: 8px; font-size: 0.9rem; outline: none; }
         .submit-btn { background: #10b981; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
+        .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         #status-msg { margin-top: 10px; font-size: 0.85rem; color: #f59e0b; text-align: center; }
         .start-audio-btn { background: #f59e0b; color: #000; border: none; padding: 12px; border-radius: 8px; font-weight: 800; cursor: pointer; width: 100%; margin-bottom: 16px; }
     </style>
@@ -45,12 +47,12 @@
             <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA STREAM RADIO</button>
 
             <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
-            
+
             <!-- Contenitore Copertina / Video YouTube -->
             <div id="media-container">
                 <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
             </div>
-            
+
             <div id="song-title" class="song-title">In attesa di brani...</div>
             <div id="song-artist" class="song-artist">Radio online</div>
             <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
@@ -79,7 +81,7 @@
                 <label>Carica File Audio da PC (MP3, WAV):</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
-            <button class="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
+            <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
             <div id="status-msg"></div>
         </div>
     </div>
@@ -95,6 +97,7 @@
         };
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
+        const storage = firebase.storage();
 
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
         localStorage.setItem("radio_uid", userId);
@@ -114,22 +117,48 @@
             return (match && match[2].length === 11) ? match[2] : null;
         }
 
-        // Lettura file locale in Base64 (Istantaneo)
-        function fileToBase64(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.readAsDataURL(file);
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = err => reject(err);
+        // Verifica (client-side, senza backend) se un URL punta a un file audio riproducibile
+        // caricandolo in un <audio> nascosto e aspettando l'evento canplay/error.
+        function probeAudioUrl(url, timeoutMs = 6000) {
+            return new Promise(resolve => {
+                const test = new Audio();
+                let done = false;
+                const finish = ok => {
+                    if (done) return;
+                    done = true;
+                    test.src = "";
+                    resolve(ok);
+                };
+                test.addEventListener('canplay', () => finish(true), { once: true });
+                test.addEventListener('error', () => finish(false), { once: true });
+                setTimeout(() => finish(false), timeoutMs);
+                test.src = url;
             });
+        }
+
+        // Titolo/canale reali per un video YouTube tramite l'endpoint oEmbed pubblico
+        // (nessuna API key richiesta, nessun backend necessario, funziona anche su piano Spark).
+        async function fetchYouTubeMeta(videoId) {
+            try {
+                const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+                if (!res.ok) throw new Error("oEmbed non disponibile");
+                const data = await res.json();
+                return { title: data.title || "Video YouTube", artist: data.author_name || "YouTube" };
+            } catch (e) {
+                console.warn("Impossibile recuperare i metadati YouTube:", e);
+                return { title: "Video YouTube", artist: "YouTube" };
+            }
         }
 
         async function handleFormSubmit() {
             const statusMsg = document.getElementById("status-msg");
+            const submitBtn = document.getElementById("submit-btn");
             const link = document.getElementById("song-link").value.trim();
             const fileInput = document.getElementById("file-input");
             const file = fileInput.files[0];
 
+            submitBtn.disabled = true;
+            statusMsg.style.color = "#f59e0b";
             statusMsg.innerText = "⏳ Inserimento in corso...";
 
             try {
@@ -139,40 +168,79 @@
                 };
 
                 if (file) {
-                    if (file.size > 9 * 1024 * 1024) {
-                        statusMsg.innerText = "⚠️ Il file supera i 9 MB!";
+                    if (file.size > 25 * 1024 * 1024) {
+                        statusMsg.style.color = "#ef4444";
+                        statusMsg.innerText = "⚠️ Il file supera i 25 MB!";
+                        submitBtn.disabled = false;
                         return;
                     }
+
+                    statusMsg.innerText = "⏫ Caricamento file su Storage...";
+
+                    // Upload reale su Firebase Storage (niente più Base64 in Firestore,
+                    // che ha un limite di 1MB per documento).
+                    const safeName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+                    const storageRef = storage.ref(`uploads/${safeName}`);
+                    await storageRef.put(file);
+                    const downloadUrl = await storageRef.getDownloadURL();
+
                     songData.type = "mp3";
-                    songData.audioUrl = await fileToBase64(file);
+                    songData.audioUrl = downloadUrl;
                     songData.title = file.name.replace(/\.[^/.]+$/, "");
                     songData.artist = "Upload Locale";
+
                 } else if (link) {
                     const ytId = extractYouTubeId(link);
+
                     if (ytId) {
+                        statusMsg.innerText = "🔍 Recupero informazioni video...";
+                        const meta = await fetchYouTubeMeta(ytId);
                         songData.type = "youtube";
                         songData.youtubeId = ytId;
-                        songData.title = "Video YouTube";
-                        songData.artist = "YouTube Live Stream";
+                        songData.title = meta.title;
+                        songData.artist = meta.artist;
+
                     } else {
+                        // Non è un link YouTube: verifichiamo che sia davvero un file
+                        // audio riproducibile dal browser prima di metterlo in coda,
+                        // altrimenti la radio si blocca in silenzio su un link morto.
+                        statusMsg.innerText = "🔍 Verifica del link audio...";
+                        const playable = await probeAudioUrl(link);
+                        if (!playable) {
+                            statusMsg.style.color = "#ef4444";
+                            statusMsg.innerText = "❌ Il link non è un file audio diretto riproducibile (serve un .mp3/.wav/.ogg diretto, non una pagina web).";
+                            submitBtn.disabled = false;
+                            return;
+                        }
                         songData.type = "mp3";
                         songData.audioUrl = link;
-                        songData.title = "Audio da Link Direct";
+                        try {
+                            const fileName = decodeURIComponent(link.split('/').pop().split('?')[0]);
+                            songData.title = fileName || "Audio da Link Diretto";
+                        } catch {
+                            songData.title = "Audio da Link Diretto";
+                        }
                         songData.artist = "Stream Esterno";
                     }
                 } else {
+                    statusMsg.style.color = "#ef4444";
                     statusMsg.innerText = "⚠️ Inserisci un link o un file!";
+                    submitBtn.disabled = false;
                     return;
                 }
 
                 await db.collection("queue").add(songData);
+                statusMsg.style.color = "#10b981";
                 statusMsg.innerText = "✅ Inserito in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
+                statusMsg.style.color = "#ef4444";
                 statusMsg.innerText = "❌ Errore: " + err.message;
+            } finally {
+                submitBtn.disabled = false;
             }
         }
 
@@ -192,7 +260,7 @@
 
         async function forceCheckQueue() {
             const currentDoc = await db.collection("radioState").doc("current").get();
-            if (!currentDoc.exists()) advanceQueue();
+            if (!currentDoc.exists) advanceQueue();
         }
 
         async function advanceQueue() {
@@ -214,9 +282,17 @@
         const audioPlayer = document.getElementById('radio-player');
         const mediaContainer = document.getElementById('media-container');
 
+        // Se un file audio in coda fallisce (link morto, formato non supportato ecc.)
+        // passiamo automaticamente al brano successivo invece di restare bloccati.
+        audioPlayer.addEventListener('error', () => {
+            console.warn("Errore riproduzione audio, skip automatico.");
+            advanceQueue();
+        });
+
         db.collection("radioState").doc("current").onSnapshot(doc => {
-            if (!doc.exists()) {
+            if (!doc.exists) {
                 audioPlayer.pause();
+                audioPlayer.removeAttribute('src');
                 audioPlayer.style.display = "none";
                 mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
                 document.getElementById('song-title').innerText = "In attesa di brani...";
@@ -238,7 +314,7 @@
             if (data.type === "youtube") {
                 audioPlayer.pause();
                 audioPlayer.style.display = "none";
-                
+
                 // Embed YouTube con auto-play e punto di inizio sincronizzato
                 mediaContainer.innerHTML = `<iframe src="https://www.youtube.com/embed/${data.youtubeId}?autoplay=1&start=${startOffset}" allow="autoplay"></iframe>`;
             } else {
