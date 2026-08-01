@@ -12,7 +12,6 @@
     <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
@@ -97,7 +96,6 @@
         };
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
-        const storage = firebase.storage();
 
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
         localStorage.setItem("radio_uid", userId);
@@ -115,7 +113,7 @@
         }
 
         // Chiede al backend esterno (yt-dlp) di scaricare l'audio dal link e restituisce
-        // un URL temporaneo (valido 30 minuti) al file mp3 su Firebase Storage.
+        // un URL temporaneo (gratuito, via Litterbox/catbox.moe) al file mp3.
         async function requestDownload(link) {
             const res = await fetch(`${BACKEND_URL}/download`, {
                 method: "POST",
@@ -125,6 +123,23 @@
             const data = await res.json();
             if (!res.ok) {
                 throw new Error(data.error || "Download fallito.");
+            }
+            return data; // { audioUrl, title, artist }
+        }
+
+        // Invia il file locale al backend, che lo carica su Litterbox (gratuito)
+        // e restituisce l'URL diretto. Sostituisce l'upload su Firebase Storage.
+        async function requestUpload(file) {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const res = await fetch(`${BACKEND_URL}/upload`, {
+                method: "POST",
+                body: formData
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.error || "Upload fallito.");
             }
             return data; // { audioUrl, title, artist }
         }
@@ -154,24 +169,19 @@
                         return;
                     }
 
-                    statusMsg.innerText = "⏫ Caricamento file su Storage...";
-
-                    // Upload reale su Firebase Storage (niente più Base64 in Firestore,
-                    // che ha un limite di 1MB per documento).
-                    const safeName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-                    const storageRef = storage.ref(`uploads/${safeName}`);
-                    await storageRef.put(file);
-                    const downloadUrl = await storageRef.getDownloadURL();
-
+                    // Il file passa dal backend, che lo carica su Litterbox (gratuito,
+                    // nessun account, nessun piano a pagamento Firebase richiesto).
+                    statusMsg.innerText = "⏫ Caricamento file in corso...";
+                    const result = await requestUpload(file);
                     songData.type = "mp3";
-                    songData.audioUrl = downloadUrl;
-                    songData.title = file.name.replace(/\.[^/.]+$/, "");
-                    songData.artist = "Upload Locale";
+                    songData.audioUrl = result.audioUrl;
+                    songData.title = result.title;
+                    songData.artist = result.artist;
 
                 } else if (link) {
                     // Ogni link (YouTube, SoundCloud, Bandcamp, mp3 diretto, ecc.) passa
                     // dal backend con yt-dlp, che scarica/estrae l'audio e lo carica
-                    // temporaneamente (30 min) su Firebase Storage.
+                    // temporaneamente e gratuitamente su Litterbox (catbox.moe).
                     statusMsg.innerText = "⏬ Download in corso (può richiedere fino a 1 minuto)...";
                     const result = await requestDownload(link);
                     songData.type = "mp3";
