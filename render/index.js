@@ -1,11 +1,7 @@
 // server/index.js
-// Backend gratuito per JulyFM da deployare su Render.com (Web Service, piano Free).
-// Sostituisce Firebase Storage: scarica l'audio (yt-dlp + ffmpeg) o riceve un file
-// caricato dall'utente, poi lo carica su Litterbox (catbox.moe) che è gratuito,
-// non richiede account, e restituisce un link diretto scaricabile/riproducibile.
-//
-// Firestore (coda + stato radio) resta lato client come prima: NON serve billing
-// per quello, resta gratis sul piano Spark. L'unica cosa che costava era Storage.
+// Backend gratuito per JulyFM / ch1noFM da deployare su Render.com (Web Service, piano Free).
+// Sostituisce Firebase Storage: scarica l'audio (yt-dlp + ffmpeg o segmenti stream)
+// o riceve un file caricato dall'utente, poi lo carica su Litterbox/Catbox/Pixeldrain.
 
 const express = require("express");
 const cors = require("cors");
@@ -22,15 +18,13 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" })); // JSON piccolo, i file passano da multer
 
-// Multer salva i file caricati temporaneamente in RAM per poi girarli a Litterbox
+// Multer salva i file caricati temporaneamente in RAM per poi girarli allo storage
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB, alza/abbassa a piacere
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
 });
 
-// Render monta i Secret Files in sola lettura, ma yt-dlp ha bisogno di poter
-// AGGIORNARE il file dei cookie (per salvare la sessione più recente). Quindi
-// copiamo il contenuto in una posizione scrivibile all'avvio, e usiamo quella.
+// Gestione Secret Files su Render per i cookie YouTube
 const SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
 let cookiesFilePath = null;
 if (fs.existsSync(SECRET_COOKIES_PATH)) {
@@ -47,8 +41,7 @@ if (fs.existsSync(SECRET_COOKIES_PATH)) {
 }
 
 /**
- * Carica un buffer audio su Litterbox (scade dopo `time`, es. "1h","12h","24h","72h").
- * Nessuna autenticazione richiesta.
+ * Carica un buffer audio su Litterbox (scade dopo `time`, es. "12h").
  */
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
@@ -61,14 +54,11 @@ async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
     form,
     { headers: form.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
   );
-  // Litterbox risponde con l'URL diretto in plain text, es: https://litter.catbox.moe/xxxxx.mp3
   return res.data.trim();
 }
 
 /**
- * Fallback: catbox.moe "normale" (upload anonimo, file permanente finché non
- * viene ripulito manualmente). Usato solo se Litterbox risponde con errore,
- * perché a volte Litterbox è instabile essendo un servizio gratuito minore.
+ * Fallback: catbox.moe "normale" (upload permanente).
  */
 async function uploadToCatbox(fileBuffer, fileName) {
   const form = new FormData();
@@ -84,9 +74,7 @@ async function uploadToCatbox(fileBuffer, fileName) {
 }
 
 /**
- * Secondo fallback, su un'infrastruttura DIVERSA da catbox/litterbox (che sono
- * la stessa azienda: se una è sotto blocco anti-abuso spesso lo è anche
- * l'altra). Pixeldrain è gratuito, upload anonimo, nessuna registrazione.
+ * Secondo fallback: Pixeldrain.
  */
 async function uploadToPixeldrain(fileBuffer, fileName) {
   const form = new FormData();
@@ -97,13 +85,11 @@ async function uploadToPixeldrain(fileBuffer, fileName) {
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
   });
-  // Risposta JSON: { id: "abc123", success: true }
   return `https://pixeldrain.com/api/file/${res.data.id}`;
 }
 
 /**
- * Prova Litterbox → Catbox → Pixeldrain in cascata. Logga il motivo esatto
- * di ogni fallimento (utile nei log di Render per capire cosa succede).
+ * Prova Litterbox → Catbox → Pixeldrain in cascata.
  */
 async function uploadAudio(fileBuffer, fileName) {
   try {
@@ -127,13 +113,9 @@ async function uploadAudio(fileBuffer, fileName) {
   }
 }
 
-app.get("/", (req, res) => res.send("JulyFM backend attivo ✅"));
+app.get("/", (req, res) => res.send("ch1noFM / JulyFM backend attivo ✅"));
 
-// --- Endpoint di DEBUG: mostra i formati che yt-dlp riesce a vedere per un link.
-// Usalo così nel browser: https://ch1nofm.onrender.com/formats?url=https://www.youtube.com/watch?v=XXXX
-// Se la lista è vuota, YouTube non sta concedendo NESSUN formato a questo server
-// per quel video (spesso succede con contenuti musicali ufficiali/major label),
-// e nessuna scelta di formato diversa risolverebbe il problema.
+// Endpoint di Debug Formati
 app.get("/formats", async (req, res) => {
   const link = req.query.url;
   if (!link) return res.status(400).send("Aggiungi ?url=... alla richiesta.");
@@ -154,9 +136,7 @@ app.get("/formats", async (req, res) => {
   }
 });
 
-// Riconosce link che puntano DIRETTAMENTE a un file audio (es. quelli generati da
-// servizi come typetype.video), individuabili dall'estensione nel percorso.
-// In questi casi non serve affatto yt-dlp: scarichiamo il file così com'è.
+// Controllo estensioni audio dirette
 const DIRECT_AUDIO_EXTENSIONS = [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac", ".webm", ".opus"];
 function isDirectAudioUrl(url) {
   try {
@@ -167,14 +147,64 @@ function isDirectAudioUrl(url) {
   }
 }
 
-// --- Endpoint 1: link YouTube/SoundCloud/mp3 diretto -> scarica con yt-dlp e carica su Litterbox
+/**
+ * NUOVA FUNZIONE DI SUPPORTO:
+ * Riconosce e assembla automaticamente gli stream a segmenti di piattaforme come typetype.video
+ */
+async function downloadSabrStream(url) {
+  // Se l'URL fornito è già un endpoint di playback segmentato o della pagina
+  const match = url.match(/(https:\/\/watch\.typetype\.video\/api\/sabr\/playback\/[^\/]+)/);
+  if (!match) return null;
+
+  const baseUrl = match[1];
+  let segmentIndex = 0;
+  let chunks = [];
+  let keepGoing = true;
+
+  console.log(`[SABR Stream] Inizio assemblaggio segmenti da: ${baseUrl}`);
+
+  while (keepGoing && segmentIndex < 500) { // Limite di sicurezza 500 segmenti
+    const segUrl = `${baseUrl}/140/segment/${segmentIndex}?generation=0`;
+    try {
+      const res = await axios.get(segUrl, { responseType: "arraybuffer", timeout: 5000 });
+      chunks.push(Buffer.from(res.data));
+      segmentIndex++;
+    } catch (e) {
+      keepGoing = false; // Quando la risposta restituisce 404/400 il flusso è finito
+    }
+  }
+
+  if (chunks.length === 0) return null;
+  
+  console.log(`[SABR Stream] Scaricati ${chunks.length} segmenti con successo.`);
+  return Buffer.concat(chunks);
+}
+
+// --- Endpoint 1: Download da URL (YouTube, SoundCloud, typetype, mp3 diretti) ---
 app.post("/download", async (req, res) => {
   const { url: link } = req.body;
   if (!link) return res.status(400).json({ error: "URL mancante." });
 
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
 
-  // --- Percorso rapido: il link è già un file audio diretto (niente yt-dlp) ---
+  // --- Caso A: Stream a segmenti tipo typetype.video ---
+  if (link.includes("watch.typetype.video")) {
+    try {
+      const sabrBuffer = await downloadSabrStream(link);
+      if (sabrBuffer) {
+        const audioUrl = await uploadAudio(sabrBuffer, `${Date.now()}_stream.m4a`);
+        return res.json({
+          audioUrl,
+          title: "Stream typetype.video",
+          artist: "Web Radio Stream",
+        });
+      }
+    } catch (err) {
+      console.error("Errore download SABR stream:", err.message);
+    }
+  }
+
+  // --- Caso B: Link diretto ad un file audio (.mp3, .m4a, ecc.) ---
   if (isDirectAudioUrl(link)) {
     try {
       const response = await axios.get(link, { responseType: "arraybuffer" });
@@ -195,10 +225,11 @@ app.post("/download", async (req, res) => {
     }
   }
 
+  // --- Caso C: YouTube e altri portali supportati da yt-dlp ---
   try {
     const ytOptionsBase = cookiesFilePath
-      ? { cookies: cookiesFilePath } // con cookie reali non serve forzare un client specifico
-      : { extractorArgs: "youtube:player_client=android" }; // fallback senza cookie
+      ? { cookies: cookiesFilePath }
+      : { extractorArgs: "youtube:player_client=android" };
 
     const info = await ytDlp(link, {
       dumpSingleJson: true,
@@ -237,7 +268,7 @@ app.post("/download", async (req, res) => {
   }
 });
 
-// --- Endpoint 2: file audio caricato dall'utente -> passa dritto a Litterbox
+// --- Endpoint 2: File audio caricato dall'utente ---
 app.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Nessun file ricevuto." });
 
