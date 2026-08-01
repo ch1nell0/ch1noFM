@@ -47,6 +47,41 @@ async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   return res.data.trim();
 }
 
+/**
+ * Fallback: catbox.moe "normale" (upload anonimo, file permanente finché non
+ * viene ripulito manualmente). Usato solo se Litterbox risponde con errore,
+ * perché a volte Litterbox è instabile essendo un servizio gratuito minore.
+ */
+async function uploadToCatbox(fileBuffer, fileName) {
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("fileToUpload", fileBuffer, fileName);
+
+  const res = await axios.post(
+    "https://catbox.moe/user/api.php",
+    form,
+    { headers: form.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
+  );
+  return res.data.trim();
+}
+
+/**
+ * Prova Litterbox, e se fallisce ripiega su Catbox. Logga il motivo esatto
+ * dell'errore (utile nei log di Render per capire cosa succede).
+ */
+async function uploadAudio(fileBuffer, fileName) {
+  try {
+    return await uploadToLitterbox(fileBuffer, fileName);
+  } catch (err) {
+    console.error(
+      "Litterbox fallito, provo Catbox. Dettaglio:",
+      err.response?.status,
+      err.response?.data || err.message
+    );
+    return await uploadToCatbox(fileBuffer, fileName);
+  }
+}
+
 app.get("/", (req, res) => res.send("JulyFM backend attivo ✅"));
 
 // --- Endpoint 1: link YouTube/SoundCloud/mp3 diretto -> scarica con yt-dlp e carica su Litterbox
@@ -61,6 +96,7 @@ app.post("/download", async (req, res) => {
       dumpSingleJson: true,
       noWarnings: true,
       defaultSearch: "ytsearch1:",
+      extractorArgs: "youtube:player_client=android,web",
     });
     const videoInfo = info.entries ? info.entries[0] : info;
 
@@ -70,10 +106,11 @@ app.post("/download", async (req, res) => {
       output: outputFile,
       ffmpegLocation: ffmpegPath,
       defaultSearch: "ytsearch1:",
+      extractorArgs: "youtube:player_client=android,web",
     });
 
     const audioBuffer = fs.readFileSync(outputFile);
-    const audioUrl = await uploadToLitterbox(audioBuffer, `${Date.now()}.mp3`);
+    const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
 
     res.json({
       audioUrl,
@@ -81,8 +118,8 @@ app.post("/download", async (req, res) => {
       artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Download fallito: " + err.message });
+    console.error("Errore /download:", err.response?.data || err.message);
+    res.status(500).json({ error: "Download fallito: " + (err.response?.data || err.message) });
   } finally {
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
   }
@@ -94,7 +131,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
   try {
     const safeName = `${Date.now()}_${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const audioUrl = await uploadToLitterbox(req.file.buffer, safeName);
+    const audioUrl = await uploadAudio(req.file.buffer, safeName);
 
     res.json({
       audioUrl,
