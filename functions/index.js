@@ -1,156 +1,111 @@
-const {onRequest} = require("firebase-functions/v2/https");
-const admin = require("firebase-admin");
+// server/index.js
+// Backend gratuito per JulyFM da deployare su Render.com (Web Service, piano Free).
+// Sostituisce Firebase Storage: scarica l'audio (yt-dlp + ffmpeg) o riceve un file
+// caricato dall'utente, poi lo carica su Litterbox (catbox.moe) che è gratuito,
+// non richiede account, e restituisce un link diretto scaricabile/riproducibile.
+//
+// Firestore (coda + stato radio) resta lato client come prima: NON serve billing
+// per quello, resta gratis sul piano Spark. L'unica cosa che costava era Storage.
+
+const express = require("express");
+const cors = require("cors");
+const multer = require("multer");
 const axios = require("axios");
 const FormData = require("form-data");
 const ytDlp = require("yt-dlp-exec");
+const ffmpegPath = require("ffmpeg-static");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-admin.initializeApp();
-const db = admin.firestore();
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "5mb" })); // JSON piccolo, i file passano da multer
+
+// Multer salva i file caricati temporaneamente in RAM per poi girarli a Litterbox
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB, alza/abbassa a piacere
+});
 
 /**
- * Uploads audio file buffer to Litterbox (temp storage).
- * @param {Buffer} fileBuffer - Audio file binary buffer.
- * @param {string} fileName - Name of the file.
- * @return {Promise<string>} Direct download URL.
+ * Carica un buffer audio su Litterbox (scade dopo `time`, es. "1h","12h","24h","72h").
+ * Nessuna autenticazione richiesta.
  */
-async function uploadToLitterbox(fileBuffer, fileName) {
+async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
   form.append("reqtype", "fileupload");
-  form.append("time", "1h");
+  form.append("time", time);
   form.append("fileToUpload", fileBuffer, fileName);
 
   const res = await axios.post(
-      "https://litterbox.catbox.moe/resources/internals/api.php",
-      form,
-      {headers: form.getHeaders()},
+    "https://litterbox.catbox.moe/resources/internals/api.php",
+    form,
+    { headers: form.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
   );
-  return res.data;
+  // Litterbox risponde con l'URL diretto in plain text, es: https://litter.catbox.moe/xxxxx.mp3
+  return res.data.trim();
 }
 
-exports.submitSong = onRequest(
-    {cors: true, maxInstances: 2},
-    async (req, res) => {
-      try {
-        const {
-          link,
-          requestedBy,
-          requestedById,
-          isFile,
-          fileBase64,
-          fileName,
-        } = req.body;
-        let finalAudioUrl = "";
-        let songTitle = "Traccia Sconosciuta";
-        let artistName = "Artista Sconosciuto";
-        let durationSec = 180;
-        let coverUrl = "";
+app.get("/", (req, res) => res.send("JulyFM backend attivo ✅"));
 
-        if (isFile && fileBase64) {
-          const buffer = Buffer.from(fileBase64, "base64");
-          finalAudioUrl = await uploadToLitterbox(
-              buffer,
-              fileName || "audio.mp3",
-          );
-          songTitle = fileName ?
-            fileName.replace(/\.[^/.]+$/, "") :
-            "File Locale";
-        } else if (link) {
-          const outputFormat = path.join(
-              os.tmpdir(),
-              `song_${Date.now()}.mp3`,
-          );
+// --- Endpoint 1: link YouTube/SoundCloud/mp3 diretto -> scarica con yt-dlp e carica su Litterbox
+app.post("/download", async (req, res) => {
+  const { url: link } = req.body;
+  if (!link) return res.status(400).json({ error: "URL mancante." });
 
-          const info = await ytDlp(link, {
-            dumpSingleJson: true,
-            noWarnings: true,
-            defaultSearch: "ytsearch1:",
-          });
+  const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
 
-          const videoInfo = info.entries ? info.entries[0] : info;
-          songTitle = videoInfo.title || "Traccia Live";
-          artistName =
-            videoInfo.uploader || videoInfo.artist || "Web Radio";
-          durationSec = videoInfo.duration || 180;
-          coverUrl = videoInfo.thumbnail || "";
+  try {
+    const info = await ytDlp(link, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      defaultSearch: "ytsearch1:",
+    });
+    const videoInfo = info.entries ? info.entries[0] : info;
 
-          await ytDlp(link, {
-            extractAudio: true,
-            audioFormat: "mp3",
-            output: outputFormat,
-            defaultSearch: "ytsearch1:",
-          });
+    await ytDlp(link, {
+      extractAudio: true,
+      audioFormat: "mp3",
+      output: outputFile,
+      ffmpegLocation: ffmpegPath,
+      defaultSearch: "ytsearch1:",
+    });
 
-          const audioBuffer = fs.readFileSync(outputFormat);
-          finalAudioUrl = await uploadToLitterbox(
-              audioBuffer,
-              `${Date.now()}.mp3`,
-          );
-          fs.unlinkSync(outputFormat);
-        } else {
-          return res.status(400).send({
-            error: "Fornisci un link o un file audio valido.",
-          });
-        }
+    const audioBuffer = fs.readFileSync(outputFile);
+    const audioUrl = await uploadToLitterbox(audioBuffer, `${Date.now()}.mp3`);
 
-        await db.collection("queue").add({
-          title: songTitle,
-          artist: artistName,
-          audioUrl: finalAudioUrl,
-          duration: parseInt(durationSec, 10),
-          coverUrl: coverUrl,
-          requestedBy: requestedBy || "Anonimo",
-          requestedById: requestedById || "anon-guest",
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        return res.send({
-          success: true,
-          message: "Canzone aggiunta in coda con successo!",
-        });
-      } catch (err) {
-        console.error(err);
-        return res.status(500).send({
-          error: "Errore durante il caricamento: " + err.message,
-        });
-      }
-    },
-);
-
-exports.advanceQueue = onRequest({cors: true}, async (req, res) => {
-  const queueSnapshot = await db
-      .collection("queue")
-      .orderBy("createdAt", "asc")
-      .limit(1)
-      .get();
-
-  if (queueSnapshot.empty) {
-    await db.collection("radioState").doc("current").delete();
-    return res.send({status: "Coda vuota"});
+    res.json({
+      audioUrl,
+      title: videoInfo.title || "Traccia sconosciuta",
+      artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Download fallito: " + err.message });
+  } finally {
+    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
   }
-
-  const nextSongDoc = queueSnapshot.docs[0];
-  const nextSong = nextSongDoc.data();
-  const now = admin.firestore.Timestamp.now();
-
-  const cooldownSeconds = nextSong.duration * 2;
-  const cooldownUntil = admin.firestore.Timestamp.fromMillis(
-      now.toMillis() + cooldownSeconds * 1000,
-  );
-
-  await db.collection("users").doc(nextSong.requestedById).set(
-      {cooldownUntil: cooldownUntil},
-      {merge: true},
-  );
-
-  await db.collection("radioState").doc("current").set({
-    ...nextSong,
-    startTime: now,
-    currentSkipVotes: [],
-  });
-
-  await nextSongDoc.ref.delete();
-  return res.send({status: "Riproduzione avviata", title: nextSong.title});
 });
+
+// --- Endpoint 2: file audio caricato dall'utente -> passa dritto a Litterbox
+app.post("/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Nessun file ricevuto." });
+
+  try {
+    const safeName = `${Date.now()}_${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const audioUrl = await uploadToLitterbox(req.file.buffer, safeName);
+
+    res.json({
+      audioUrl,
+      title: req.file.originalname.replace(/\.[^/.]+$/, ""),
+      artist: "Upload Locale",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Upload fallito: " + err.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server avviato sulla porta ${PORT}`));
