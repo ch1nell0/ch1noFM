@@ -28,6 +28,23 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB, alza/abbassa a piacere
 });
 
+// --- Cookie YouTube opzionali (per bypassare il blocco "sign in to confirm you're not a bot") ---
+// Se impostata la variabile d'ambiente YOUTUBE_COOKIES_B64 su Render (contenuto
+// di un file cookies.txt in formato Netscape, codificato in base64), lo scriviamo
+// su disco all'avvio e lo passiamo a yt-dlp. Senza questa variabile il server
+// funziona lo stesso, semplicemente YouTube potrebbe bloccare alcuni video.
+let cookiesFilePath = null;
+if (process.env.YOUTUBE_COOKIES_B64) {
+  try {
+    cookiesFilePath = path.join(os.tmpdir(), "yt-cookies.txt");
+    fs.writeFileSync(cookiesFilePath, Buffer.from(process.env.YOUTUBE_COOKIES_B64, "base64"));
+    console.log("Cookie YouTube caricati correttamente.");
+  } catch (err) {
+    console.error("Impossibile scrivere i cookie YouTube:", err.message);
+    cookiesFilePath = null;
+  }
+}
+
 /**
  * Carica un buffer audio su Litterbox (scade dopo `time`, es. "1h","12h","24h","72h").
  * Nessuna autenticazione richiesta.
@@ -119,12 +136,16 @@ app.post("/download", async (req, res) => {
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
 
   try {
+    const ytOptionsBase = cookiesFilePath
+      ? { cookies: cookiesFilePath } // con cookie reali non serve forzare un client specifico
+      : { extractorArgs: "youtube:player_client=android" }; // fallback senza cookie
+
     const info = await ytDlp(link, {
       dumpSingleJson: true,
       noWarnings: true,
       noPlaylist: true,
       defaultSearch: "ytsearch1:",
-      extractorArgs: "youtube:player_client=android",
+      ...ytOptionsBase,
     });
     const videoInfo = info.entries ? info.entries[0] : info;
 
@@ -135,7 +156,7 @@ app.post("/download", async (req, res) => {
       ffmpegLocation: ffmpegPath,
       noPlaylist: true,
       defaultSearch: "ytsearch1:",
-      extractorArgs: "youtube:player_client=android",
+      ...ytOptionsBase,
     });
 
     const audioBuffer = fs.readFileSync(outputFile);
