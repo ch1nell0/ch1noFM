@@ -29,20 +29,20 @@ const upload = multer({
 });
 
 // --- Cookie YouTube opzionali (per bypassare il blocco "sign in to confirm you're not a bot") ---
-// Se impostata la variabile d'ambiente YOUTUBE_COOKIES_B64 su Render (contenuto
-// di un file cookies.txt in formato Netscape, codificato in base64), lo scriviamo
-// su disco all'avvio e lo passiamo a yt-dlp. Senza questa variabile il server
-// funziona lo stesso, semplicemente YouTube potrebbe bloccare alcuni video.
+// Usiamo un Secret File di Render (non una variabile d'ambiente: i cookie sono
+// troppo grandi e mandano in crash il processo di build se messi in una env var).
+// Su Render: Environment -> Secret Files -> Add Secret File
+//   Filename:  cookies.txt
+//   Contents:  incolla qui il contenuto GREZZO del file cookies.txt esportato
+//              dal browser (NON in base64, il testo così com'è)
+// Render lo monta automaticamente in /etc/secrets/cookies.txt
+const SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
 let cookiesFilePath = null;
-if (process.env.YOUTUBE_COOKIES_B64) {
-  try {
-    cookiesFilePath = path.join(os.tmpdir(), "yt-cookies.txt");
-    fs.writeFileSync(cookiesFilePath, Buffer.from(process.env.YOUTUBE_COOKIES_B64, "base64"));
-    console.log("Cookie YouTube caricati correttamente.");
-  } catch (err) {
-    console.error("Impossibile scrivere i cookie YouTube:", err.message);
-    cookiesFilePath = null;
-  }
+if (fs.existsSync(SECRET_COOKIES_PATH)) {
+  cookiesFilePath = SECRET_COOKIES_PATH;
+  console.log("Cookie YouTube trovati (Secret File), verranno usati per i download.");
+} else {
+  console.log("Nessun cookie YouTube configurato: si userà il client android come fallback.");
 }
 
 /**
