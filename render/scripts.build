@@ -1,0 +1,4 @@
+"scripts": {
+  "build": "npm install && npx yt-dlp-exec --update",
+  "start": "node server.js"
+}
