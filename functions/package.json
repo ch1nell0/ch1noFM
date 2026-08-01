@@ -1,21 +1,19 @@
 {
-  "name": "julyfm-backend",
+  "name": "ch1nofm-backend",
   "version": "1.0.0",
-  "description": "Backend gratuito per JulyFM: yt-dlp/ffmpeg + upload su Litterbox (no Firebase Storage)",
-  "main": "index.js",
+  "description": "Backend per ch1noFM con yt-dlp e fallback upload",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js"
-  },
-  "engines": {
-    "node": "20.x"
+    "build": "npm install && npx yt-dlp-exec --update",
+    "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.7.7",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "ffmpeg-static": "^5.2.0",
+    "axios": "^1.7.0",
+    "express": "^4.19.0",
     "form-data": "^4.0.0",
-    "multer": "^1.4.5-lts.1",
-    "yt-dlp-exec": "^1.0.2"
+    "yt-dlp-exec": "^2.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
