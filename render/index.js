@@ -129,6 +129,31 @@ async function uploadAudio(fileBuffer, fileName) {
 
 app.get("/", (req, res) => res.send("JulyFM backend attivo ✅"));
 
+// --- Endpoint di DEBUG: mostra i formati che yt-dlp riesce a vedere per un link.
+// Usalo così nel browser: https://ch1nofm.onrender.com/formats?url=https://www.youtube.com/watch?v=XXXX
+// Se la lista è vuota, YouTube non sta concedendo NESSUN formato a questo server
+// per quel video (spesso succede con contenuti musicali ufficiali/major label),
+// e nessuna scelta di formato diversa risolverebbe il problema.
+app.get("/formats", async (req, res) => {
+  const link = req.query.url;
+  if (!link) return res.status(400).send("Aggiungi ?url=... alla richiesta.");
+
+  try {
+    const ytOptionsBase = cookiesFilePath ? { cookies: cookiesFilePath } : {};
+    const result = await ytDlp(link, {
+      listFormats: true,
+      noWarnings: true,
+      noPlaylist: true,
+      ...ytOptionsBase,
+    });
+    res.type("text/plain").send(typeof result === "string" ? result : JSON.stringify(result, null, 2));
+  } catch (err) {
+    res.status(500).type("text/plain").send(
+      "Errore yt-dlp:\n" + (err.stderr || err.message || String(err))
+    );
+  }
+});
+
 // --- Endpoint 1: link YouTube/SoundCloud/mp3 diretto -> scarica con yt-dlp e carica su Litterbox
 app.post("/download", async (req, res) => {
   const { url: link } = req.body;
