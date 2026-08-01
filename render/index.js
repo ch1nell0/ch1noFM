@@ -28,19 +28,20 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB, alza/abbassa a piacere
 });
 
-// --- Cookie YouTube opzionali (per bypassare il blocco "sign in to confirm you're not a bot") ---
-// Usiamo un Secret File di Render (non una variabile d'ambiente: i cookie sono
-// troppo grandi e mandano in crash il processo di build se messi in una env var).
-// Su Render: Environment -> Secret Files -> Add Secret File
-//   Filename:  cookies.txt
-//   Contents:  incolla qui il contenuto GREZZO del file cookies.txt esportato
-//              dal browser (NON in base64, il testo così com'è)
-// Render lo monta automaticamente in /etc/secrets/cookies.txt
+// Render monta i Secret Files in sola lettura, ma yt-dlp ha bisogno di poter
+// AGGIORNARE il file dei cookie (per salvare la sessione più recente). Quindi
+// copiamo il contenuto in una posizione scrivibile all'avvio, e usiamo quella.
 const SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
 let cookiesFilePath = null;
 if (fs.existsSync(SECRET_COOKIES_PATH)) {
-  cookiesFilePath = SECRET_COOKIES_PATH;
-  console.log("Cookie YouTube trovati (Secret File), verranno usati per i download.");
+  try {
+    cookiesFilePath = path.join(os.tmpdir(), "yt-cookies.txt");
+    fs.copyFileSync(SECRET_COOKIES_PATH, cookiesFilePath);
+    console.log("Cookie YouTube trovati (Secret File), copiati in posizione scrivibile.");
+  } catch (err) {
+    console.error("Impossibile copiare i cookie YouTube:", err.message);
+    cookiesFilePath = null;
+  }
 } else {
   console.log("Nessun cookie YouTube configurato: si userà il client android come fallback.");
 }
@@ -144,6 +145,7 @@ app.post("/download", async (req, res) => {
       dumpSingleJson: true,
       noWarnings: true,
       noPlaylist: true,
+      format: "bestaudio/best",
       defaultSearch: "ytsearch1:",
       ...ytOptionsBase,
     });
@@ -155,6 +157,7 @@ app.post("/download", async (req, res) => {
       output: outputFile,
       ffmpegLocation: ffmpegPath,
       noPlaylist: true,
+      format: "bestaudio/best",
       defaultSearch: "ytsearch1:",
       ...ytOptionsBase,
     });
