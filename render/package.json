@@ -1,20 +1,19 @@
 {
-  "name": "chino-fm-backend",
+  "name": "ch1nofm-backend",
   "version": "1.0.0",
-  "description": "Backend per ch1noFM / JulyFM",
-  "main": "server/index.js",
+  "description": "Backend per ch1noFM con yt-dlp e fallback upload",
+  "main": "server.js",
   "scripts": {
     "build": "npm install && npx yt-dlp-exec --update",
     "start": "node server.js"
-},
+  },
   "dependencies": {
-    "axios": "^1.6.0",
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "ffmpeg-static": "^5.2.0",
+    "axios": "^1.7.0",
+    "express": "^4.19.0",
     "form-data": "^4.0.0",
-    "multer": "^1.4.5-lts.1",
-    "puppeteer": "^22.0.0",
-    "yt-dlp-exec": "^2.4.0"
+    "yt-dlp-exec": "^2.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
