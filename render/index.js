@@ -4,6 +4,8 @@ const cors = require("cors");
 const multer = require("multer");
 const axios = require("axios");
 const FormData = require("form-data");
+const ytDlp = require("yt-dlp-exec");
+const ffmpegPath = require("ffmpeg-static");
 const puppeteer = require("puppeteer");
 const fs = require("fs");
 const path = require("path");
@@ -18,7 +20,7 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-// --- SISTEMA DI UPLOAD FALLBACK (Litterbox -> Catbox -> Pixeldrain) ---
+// --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
   form.append("reqtype", "fileupload");
@@ -70,95 +72,114 @@ async function uploadAudio(fileBuffer, fileName) {
   }
 }
 
-// --- SCRAPER HEADLESS PER TYPETYPE (Puppeteer) ---
-async function downloadFromTypeType(url) {
-  console.log(`[Puppeteer] Avvio browser headless per: ${url}`);
-  
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--disable-gpu"
-    ],
-  });
+// Configurazione opzioni Puppeteer per ambienti senza GUI (Render)
+const PUPPETEER_LAUNCH_OPTIONS = {
+  headless: "new",
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-accelerated-2d-canvas",
+    "--disable-gpu",
+  ],
+};
 
+// --- SCRAPER DEDICATO: TYPETYPE.VIDEO ---
+async function downloadFromTypeType(url) {
+  console.log(`[TypeType] Avvio intercettazione headless per: ${url}`);
+  const browser = await puppeteer.launch(PUPPETEER_LAUNCH_OPTIONS);
   const page = await browser.newPage();
-  
-  // Finiamo per simulare un browser reale
+
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   );
 
-  const audioSegments = [];
-  let title = "Traccia TypeType";
+  const chunks = [];
+  let videoTitle = "Traccia TypeType";
 
-  // Intercettiamo TUTTA la rete per acchiappare i segmenti audio/video caricati dalla pagina
+  // Intercettiamo tutti i pacchetti di dati scaricati dal lettore
   page.on("response", async (response) => {
     const reqUrl = response.url();
-    // Cerca gli endpoint dei segmenti audio/video di typetype
-    if (reqUrl.includes("/sabr/") || reqUrl.includes("/segment/") || reqUrl.includes(".m4s") || reqUrl.includes(".mp4")) {
+    if (
+      reqUrl.includes("/sabr/") ||
+      reqUrl.includes("/segment/") ||
+      reqUrl.includes(".m4s") ||
+      reqUrl.includes("googlevideo.com")
+    ) {
       try {
-        const buffer = await response.buffer();
-        if (buffer && buffer.length > 0) {
-          audioSegments.push(buffer);
-        }
-      } catch (e) {
-        // ignora segmenti corrotti/incompleti
-      }
+        const buf = await response.buffer();
+        if (buf && buf.length > 0) chunks.push(buf);
+      } catch (err) {}
     }
   });
 
   try {
-    // Navighiamo fino alla pagina del video
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 });
 
-    // Cerchiamo di estrarre il titolo dalla pagina
     try {
-      const pageTitle = await page.title();
-      if (pageTitle) title = pageTitle.replace(" - TypeType", "").trim();
+      const t = await page.title();
+      if (t) videoTitle = t.replace(" - TypeType", "").trim();
     } catch (e) {}
 
-    // Simuliamo un click sul player se il video non parte da solo
-    try {
-      await page.click("video, button.play, .play-button");
-    } catch (e) {
-      // Se non c'è un bottone visibile continua comunque
-    }
-
-    // Aspettiamo 6 secondi per consentire l'accumulo dei segmenti di rete
-    await new Promise((r) => setTimeout(r, 6000));
-
-  } catch (err) {
-    console.error("[Puppeteer] Errore navigazione:", err.message);
+    // Attesa per permettere l'accumulo del buffer audio
+    await new Promise((r) => setTimeout(r, 7000));
   } finally {
     await browser.close();
   }
 
-  if (audioSegments.length === 0) {
-    throw new Error("Impossibile intercettare i dati della traccia audio da TypeType.");
+  if (chunks.length === 0) {
+    throw new Error("Nessun segmento audio/video intercettato da TypeType.");
   }
 
-  console.log(`[Puppeteer] Intercettati ${audioSegments.length} blocchi di dati! Unione in corso...`);
-  const finalBuffer = Buffer.concat(audioSegments);
-
+  console.log(`[TypeType] CATTURATI ${chunks.length} segmenti audio!`);
   return {
-    buffer: finalBuffer,
-    title: title
+    buffer: Buffer.concat(chunks),
+    title: videoTitle,
   };
 }
 
-// --- ROTTE API ---
+// --- AUTOMATIZZATORE YOUTUBE TRAMITE CONVERTITORI WEB (PUPPETEER) ---
+async function downloadYouTubeViaWebConverter(youtubeUrl) {
+  console.log(`[YouTube Puppeteer] Automazione convertitore per: ${youtubeUrl}`);
+  const browser = await puppeteer.launch(PUPPETEER_LAUNCH_OPTIONS);
+  const page = await browser.newPage();
 
-app.get("/", (req, res) => res.send("ch1noFM TypeType-Downloader attivo ✅"));
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  );
 
+  let downloadUrl = null;
+
+  try {
+    // Tentativo 1: Convertitore YTMP3 / Yt1s
+    await page.goto("https://ytmp3.nu/v2/", { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.type("input[name='url']", youtubeUrl);
+    await page.click("button[type='submit']");
+
+    // Aspetta la comparsa del link di download
+    await page.waitForSelector("a[href*='download']", { timeout: 15000 });
+    downloadUrl = await page.$eval("a[href*='download']", (el) => el.href);
+  } catch (err1) {
+    console.log("[YouTube Puppeteer] Primo convertitore fallito, provo fallback...");
+  } finally {
+    await browser.close();
+  }
+
+  if (!downloadUrl) {
+    throw new Error("Impossibile convertire il video YouTube tramite i servizi web di fallback.");
+  }
+
+  // Scarica il file MP3 generato dal convertitore
+  const response = await axios.get(downloadUrl, { responseType: "arraybuffer", timeout: 30000 });
+  return Buffer.from(response.data);
+}
+
+// --- ROUTE PRINCIPALE /DOWNLOAD ---
 app.post("/download", async (req, res) => {
   const { url: link } = req.body;
   if (!link) return res.status(400).json({ error: "URL mancante." });
 
-  // 1. GESTIONE TYPETYPE (con Puppeteer Headless)
+  // CASO 1: TYPETYPE VIDEO
   if (link.includes("typetype")) {
     try {
       const { buffer, title } = await downloadFromTypeType(link);
@@ -170,30 +191,67 @@ app.post("/download", async (req, res) => {
         artist: "TypeType Video",
       });
     } catch (err) {
-      console.error("Errore TypeType:", err.message);
+      console.error("[Errore TypeType]:", err.message);
       return res.status(500).json({ error: "Download TypeType fallito: " + err.message });
     }
   }
 
-  // 2. GESTIONE LINK DIRETTI (.mp3, .m4a, ecc.)
+  // CASO 2: YOUTUBE (Evita yt-dlp per blocchi IP ed usa Puppeteer sui convertitori)
+  if (link.includes("youtube.com") || link.includes("youtu.be")) {
+    try {
+      const audioBuffer = await downloadYouTubeViaWebConverter(link);
+      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_youtube.mp3`);
+
+      return res.json({
+        audioUrl,
+        title: "Traccia YouTube",
+        artist: "YouTube",
+      });
+    } catch (err) {
+      console.error("[Errore YouTube Converter]:", err.message);
+      return res.status(500).json({ error: "Download YouTube fallito: " + err.message });
+    }
+  }
+
+  // CASO 3: TUTTI GLI ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc. gestiti da YT-DLP)
+  const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
-    const response = await axios.get(link, { responseType: "arraybuffer", timeout: 15000 });
-    const audioBuffer = Buffer.from(response.data);
-    const fileName = link.split("/").pop().split("?")[0] || "audio.mp3";
-    const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_${fileName}`);
+    const info = await ytDlp(link, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      noPlaylist: true,
+      format: "bestaudio/best",
+      defaultSearch: "ytsearch1:",
+    });
+    const videoInfo = info.entries ? info.entries[0] : info;
+
+    await ytDlp(link, {
+      extractAudio: true,
+      audioFormat: "mp3",
+      output: outputFile,
+      ffmpegLocation: ffmpegPath,
+      noPlaylist: true,
+      format: "bestaudio/best",
+      defaultSearch: "ytsearch1:",
+    });
+
+    const audioBuffer = fs.readFileSync(outputFile);
+    const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
 
     return res.json({
       audioUrl,
-      title: fileName.replace(/\.[^/.]+$/, ""),
-      artist: "Link Diretto",
+      title: videoInfo.title || "Traccia sconosciuta",
+      artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
     });
   } catch (err) {
-    return res.status(400).json({
-      error: "Sito non supportato o link non valido. Inserisci un link TypeType o un file audio diretto (.mp3)."
-    });
+    console.error("[Errore yt-dlp Generico]:", err.message);
+    return res.status(500).json({ error: "Download fallito: " + (err.stderr || err.message) });
+  } finally {
+    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
   }
 });
 
+// --- ROUTE PER UPLOAD LOCALE DI FILE ---
 app.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Nessun file ricevuto." });
 
