@@ -1,8 +1,4 @@
 // server/index.js
-// Backend gratuito per JulyFM / ch1noFM da deployare su Render.com (Web Service, piano Free).
-// Sostituisce Firebase Storage: scarica l'audio (yt-dlp + ffmpeg o segmenti stream)
-// o riceve un file caricato dall'utente, poi lo carica su Litterbox/Catbox/Pixeldrain.
-
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -16,33 +12,25 @@ const os = require("os");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "5mb" })); // JSON piccolo, i file passano da multer
+app.use(express.json({ limit: "5mb" }));
 
-// Multer salva i file caricati temporaneamente in RAM per poi girarli allo storage
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-// Gestione Secret Files su Render per i cookie YouTube
 const SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
 let cookiesFilePath = null;
 if (fs.existsSync(SECRET_COOKIES_PATH)) {
   try {
     cookiesFilePath = path.join(os.tmpdir(), "yt-cookies.txt");
     fs.copyFileSync(SECRET_COOKIES_PATH, cookiesFilePath);
-    console.log("Cookie YouTube trovati (Secret File), copiati in posizione scrivibile.");
+    console.log("Cookie YouTube caricati da Secret File.");
   } catch (err) {
-    console.error("Impossibile copiare i cookie YouTube:", err.message);
     cookiesFilePath = null;
   }
-} else {
-  console.log("Nessun cookie YouTube configurato: si userà il client android come fallback.");
 }
 
-/**
- * Carica un buffer audio su Litterbox (scade dopo `time`, es. "12h").
- */
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
   form.append("reqtype", "fileupload");
@@ -57,9 +45,6 @@ async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   return res.data.trim();
 }
 
-/**
- * Fallback: catbox.moe "normale" (upload permanente).
- */
 async function uploadToCatbox(fileBuffer, fileName) {
   const form = new FormData();
   form.append("reqtype", "fileupload");
@@ -73,9 +58,6 @@ async function uploadToCatbox(fileBuffer, fileName) {
   return res.data.trim();
 }
 
-/**
- * Secondo fallback: Pixeldrain.
- */
 async function uploadToPixeldrain(fileBuffer, fileName) {
   const form = new FormData();
   form.append("file", fileBuffer, fileName);
@@ -88,55 +70,20 @@ async function uploadToPixeldrain(fileBuffer, fileName) {
   return `https://pixeldrain.com/api/file/${res.data.id}`;
 }
 
-/**
- * Prova Litterbox → Catbox → Pixeldrain in cascata.
- */
 async function uploadAudio(fileBuffer, fileName) {
   try {
     return await uploadToLitterbox(fileBuffer, fileName);
   } catch (err1) {
-    console.error(
-      "Litterbox fallito, provo Catbox. Dettaglio:",
-      err1.response?.status,
-      err1.response?.data || err1.message
-    );
     try {
       return await uploadToCatbox(fileBuffer, fileName);
     } catch (err2) {
-      console.error(
-        "Catbox fallito, provo Pixeldrain. Dettaglio:",
-        err2.response?.status,
-        err2.response?.data || err2.message
-      );
       return await uploadToPixeldrain(fileBuffer, fileName);
     }
   }
 }
 
-app.get("/", (req, res) => res.send("ch1noFM / JulyFM backend attivo ✅"));
+app.get("/", (req, res) => res.send("ch1noFM backend attivo ✅"));
 
-// Endpoint di Debug Formati
-app.get("/formats", async (req, res) => {
-  const link = req.query.url;
-  if (!link) return res.status(400).send("Aggiungi ?url=... alla richiesta.");
-
-  try {
-    const ytOptionsBase = cookiesFilePath ? { cookies: cookiesFilePath } : {};
-    const result = await ytDlp(link, {
-      listFormats: true,
-      noWarnings: true,
-      noPlaylist: true,
-      ...ytOptionsBase,
-    });
-    res.type("text/plain").send(typeof result === "string" ? result : JSON.stringify(result, null, 2));
-  } catch (err) {
-    res.status(500).type("text/plain").send(
-      "Errore yt-dlp:\n" + (err.stderr || err.message || String(err))
-    );
-  }
-});
-
-// Controllo estensioni audio dirette
 const DIRECT_AUDIO_EXTENSIONS = [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac", ".webm", ".opus"];
 function isDirectAudioUrl(url) {
   try {
@@ -148,63 +95,85 @@ function isDirectAudioUrl(url) {
 }
 
 /**
- * NUOVA FUNZIONE DI SUPPORTO:
- * Riconosce e assembla automaticamente gli stream a segmenti di piattaforme come typetype.video
+ * GESTORE DEDICATO PER TYPETYPE.VIDEO
+ * Estrae l'ID video da link tipo https://watch.typetype.video/watch?v=tZ0xze7u_Ss
+ * o dai link diretti ai segmenti.
  */
-async function downloadSabrStream(url) {
-  // Se l'URL fornito è già un endpoint di playback segmentato o della pagina
-  const match = url.match(/(https:\/\/watch\.typetype\.video\/api\/sabr\/playback\/[^\/]+)/);
-  if (!match) return null;
+async function handleTypeTypeVideo(link) {
+  let videoId = null;
 
-  const baseUrl = match[1];
+  // Caso 1: URL pagina watch?v=...
+  const watchMatch = link.match(/v=([a-zA-Z0-9_-]+)/);
+  if (watchMatch) {
+    videoId = watchMatch[1];
+  }
+
+  // Caso 2: URL /api/sabr/playback/...
+  const sabrMatch = link.match(/\/playback\/([^\/]+)/);
+  if (sabrMatch) {
+    videoId = sabrMatch[1];
+  }
+
+  if (!videoId) return null;
+
+  console.log(`[TypeType] Tentativo download per ID: ${videoId}`);
+
+  // Proviamo a scaricare i segmenti dell'audio (traccia 140) usando l'ID estratto
   let segmentIndex = 0;
   let chunks = [];
   let keepGoing = true;
 
-  console.log(`[SABR Stream] Inizio assemblaggio segmenti da: ${baseUrl}`);
-
-  while (keepGoing && segmentIndex < 500) { // Limite di sicurezza 500 segmenti
-    const segUrl = `${baseUrl}/140/segment/${segmentIndex}?generation=0`;
+  while (keepGoing && segmentIndex < 300) {
+    // Gestisce sia la rotta playback standard che quella con ID estratto
+    const segUrl = `https://watch.typetype.video/api/sabr/playback/${videoId}/140/segment/${segmentIndex}?generation=0`;
     try {
-      const res = await axios.get(segUrl, { responseType: "arraybuffer", timeout: 5000 });
+      const res = await axios.get(segUrl, { 
+        responseType: "arraybuffer", 
+        timeout: 4000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+      });
       chunks.push(Buffer.from(res.data));
       segmentIndex++;
     } catch (e) {
-      keepGoing = false; // Quando la risposta restituisce 404/400 il flusso è finito
+      keepGoing = false;
     }
   }
 
   if (chunks.length === 0) return null;
-  
-  console.log(`[SABR Stream] Scaricati ${chunks.length} segmenti con successo.`);
+
+  console.log(`[TypeType] Assemblati ${chunks.length} segmenti per ${videoId}`);
   return Buffer.concat(chunks);
 }
 
-// --- Endpoint 1: Download da URL (YouTube, SoundCloud, typetype, mp3 diretti) ---
+// --- Endpoint principale /download ---
 app.post("/download", async (req, res) => {
   const { url: link } = req.body;
   if (!link) return res.status(400).json({ error: "URL mancante." });
 
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
 
-  // --- Caso A: Stream a segmenti tipo typetype.video ---
-  if (link.includes("watch.typetype.video")) {
+  // --- 1. SE È UN LINK TYPETYPE.VIDEO ---
+  if (link.includes("typetype.video")) {
     try {
-      const sabrBuffer = await downloadSabrStream(link);
-      if (sabrBuffer) {
-        const audioUrl = await uploadAudio(sabrBuffer, `${Date.now()}_stream.m4a`);
+      const audioBuffer = await handleTypeTypeVideo(link);
+      if (audioBuffer) {
+        const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_typetype.m4a`);
         return res.json({
           audioUrl,
-          title: "Stream typetype.video",
-          artist: "Web Radio Stream",
+          title: "Traccia TypeType Video",
+          artist: "TypeType",
         });
+      } else {
+        return res.status(500).json({ error: "Impossibile estrarre i segmenti da TypeType. Il video potrebbe essere privato o DRM." });
       }
     } catch (err) {
-      console.error("Errore download SABR stream:", err.message);
+      return res.status(500).json({ error: "Errore durante l'elaborazione di TypeType: " + err.message });
     }
   }
 
-  // --- Caso B: Link diretto ad un file audio (.mp3, .m4a, ecc.) ---
+  // --- 2. SE È UN LINK AUDIO DIRETTO (.mp3, .m4a) ---
   if (isDirectAudioUrl(link)) {
     try {
       const response = await axios.get(link, { responseType: "arraybuffer" });
@@ -218,18 +187,19 @@ app.post("/download", async (req, res) => {
         artist: "Link diretto",
       });
     } catch (err) {
-      console.error("Errore download diretto:", err.response?.status || err.message);
-      return res.status(500).json({
-        error: "Download diretto fallito: " + (err.response?.status || err.message),
-      });
+      return res.status(500).json({ error: "Download diretto fallito: " + (err.response?.status || err.message) });
     }
   }
 
-  // --- Caso C: YouTube e altri portali supportati da yt-dlp ---
+  // --- 3. SE È YOUTUBE / SOUNDCLOUD (CON FALLBACK ANTI-BOT) ---
   try {
-    const ytOptionsBase = cookiesFilePath
-      ? { cookies: cookiesFilePath }
-      : { extractorArgs: "youtube:player_client=android" };
+    // Forziamo il client ios o android che NON richiede il controllo bot/cookies se il cookie fallisce
+    const ytOptionsBase = {
+      extractorArgs: "youtube:player_client=ios,android,web",
+    };
+    if (cookiesFilePath) {
+      ytOptionsBase.cookies = cookiesFilePath;
+    }
 
     const info = await ytDlp(link, {
       dumpSingleJson: true,
@@ -261,14 +231,13 @@ app.post("/download", async (req, res) => {
       artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
     });
   } catch (err) {
-    console.error("Errore /download:", err.response?.data || err.message);
-    res.status(500).json({ error: "Download fallito: " + (err.response?.data || err.message) });
+    console.error("Errore /download YouTube:", err.stderr || err.message);
+    res.status(500).json({ error: "Download fallito: " + (err.stderr || err.message) });
   } finally {
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
   }
 });
 
-// --- Endpoint 2: File audio caricato dall'utente ---
 app.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Nessun file ricevuto." });
 
@@ -282,10 +251,9 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       artist: "Upload Locale",
     });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Upload fallito: " + err.message });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server avviato sulla porta ${PORT}`));
