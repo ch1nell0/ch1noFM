@@ -66,19 +66,46 @@ async function uploadToCatbox(fileBuffer, fileName) {
 }
 
 /**
- * Prova Litterbox, e se fallisce ripiega su Catbox. Logga il motivo esatto
- * dell'errore (utile nei log di Render per capire cosa succede).
+ * Secondo fallback, su un'infrastruttura DIVERSA da catbox/litterbox (che sono
+ * la stessa azienda: se una è sotto blocco anti-abuso spesso lo è anche
+ * l'altra). Pixeldrain è gratuito, upload anonimo, nessuna registrazione.
+ */
+async function uploadToPixeldrain(fileBuffer, fileName) {
+  const form = new FormData();
+  form.append("file", fileBuffer, fileName);
+
+  const res = await axios.post("https://pixeldrain.com/api/file", form, {
+    headers: form.getHeaders(),
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+  });
+  // Risposta JSON: { id: "abc123", success: true }
+  return `https://pixeldrain.com/api/file/${res.data.id}`;
+}
+
+/**
+ * Prova Litterbox → Catbox → Pixeldrain in cascata. Logga il motivo esatto
+ * di ogni fallimento (utile nei log di Render per capire cosa succede).
  */
 async function uploadAudio(fileBuffer, fileName) {
   try {
     return await uploadToLitterbox(fileBuffer, fileName);
-  } catch (err) {
+  } catch (err1) {
     console.error(
       "Litterbox fallito, provo Catbox. Dettaglio:",
-      err.response?.status,
-      err.response?.data || err.message
+      err1.response?.status,
+      err1.response?.data || err1.message
     );
-    return await uploadToCatbox(fileBuffer, fileName);
+    try {
+      return await uploadToCatbox(fileBuffer, fileName);
+    } catch (err2) {
+      console.error(
+        "Catbox fallito, provo Pixeldrain. Dettaglio:",
+        err2.response?.status,
+        err2.response?.data || err2.message
+      );
+      return await uploadToPixeldrain(fileBuffer, fileName);
+    }
   }
 }
 
@@ -95,8 +122,9 @@ app.post("/download", async (req, res) => {
     const info = await ytDlp(link, {
       dumpSingleJson: true,
       noWarnings: true,
+      noPlaylist: true,
       defaultSearch: "ytsearch1:",
-      extractorArgs: "youtube:player_client=android,web",
+      extractorArgs: "youtube:player_client=android",
     });
     const videoInfo = info.entries ? info.entries[0] : info;
 
@@ -105,8 +133,9 @@ app.post("/download", async (req, res) => {
       audioFormat: "mp3",
       output: outputFile,
       ffmpegLocation: ffmpegPath,
+      noPlaylist: true,
       defaultSearch: "ytsearch1:",
-      extractorArgs: "youtube:player_client=android,web",
+      extractorArgs: "youtube:player_client=android",
     });
 
     const audioBuffer = fs.readFileSync(outputFile);
