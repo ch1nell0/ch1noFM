@@ -1,4 +1,3 @@
-// server/index.js
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -97,7 +96,6 @@ async function downloadFromTypeType(url) {
   const chunks = [];
   let videoTitle = "Traccia TypeType";
 
-  // Intercettiamo tutti i pacchetti di dati scaricati dal lettore
   page.on("response", async (response) => {
     const reqUrl = response.url();
     if (
@@ -115,13 +113,11 @@ async function downloadFromTypeType(url) {
 
   try {
     await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 });
-
     try {
       const t = await page.title();
       if (t) videoTitle = t.replace(" - TypeType", "").trim();
     } catch (e) {}
 
-    // Attesa per permettere l'accumulo del buffer audio
     await new Promise((r) => setTimeout(r, 7000));
   } finally {
     await browser.close();
@@ -131,47 +127,50 @@ async function downloadFromTypeType(url) {
     throw new Error("Nessun segmento audio/video intercettato da TypeType.");
   }
 
-  console.log(`[TypeType] CATTURATI ${chunks.length} segmenti audio!`);
   return {
     buffer: Buffer.concat(chunks),
     title: videoTitle,
   };
 }
 
-// --- AUTOMATIZZATORE YOUTUBE TRAMITE CONVERTITORI WEB (PUPPETEER) ---
-async function downloadYouTubeViaWebConverter(youtubeUrl) {
-  console.log(`[YouTube Puppeteer] Automazione convertitore per: ${youtubeUrl}`);
-  const browser = await puppeteer.launch(PUPPETEER_LAUNCH_OPTIONS);
-  const page = await browser.newPage();
-
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+// --- GESTIONE YOUTUBE TRAMITE COBALT API (Stabile e veloce) ---
+async function downloadYouTubeViaCobalt(youtubeUrl) {
+  console.log(`[YouTube Cobalt API] Elaborazione link: ${youtubeUrl}`);
+  
+  const response = await axios.post(
+    'https://api.cobalt.tools/api/json',
+    {
+      url: youtubeUrl,
+      downloadMode: 'audio',
+      audioFormat: 'mp3',
+    },
+    {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0'
+      },
+    }
   );
 
-  let downloadUrl = null;
+  if (response.data && response.data.url) {
+    const audioDownloadUrl = response.data.url;
+    const videoTitle = response.data.filename || "Traccia YouTube";
 
-  try {
-    // Tentativo 1: Convertitore YTMP3 / Yt1s
-    await page.goto("https://ytmp3.nu/v2/", { waitUntil: "domcontentloaded", timeout: 20000 });
-    await page.type("input[name='url']", youtubeUrl);
-    await page.click("button[type='submit']");
+    // Scarica l'audio binario dal link diretto fornito da Cobalt
+    const audioRes = await axios.get(audioDownloadUrl, {
+      responseType: 'arraybuffer',
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
+    });
 
-    // Aspetta la comparsa del link di download
-    await page.waitForSelector("a[href*='download']", { timeout: 15000 });
-    downloadUrl = await page.$eval("a[href*='download']", (el) => el.href);
-  } catch (err1) {
-    console.log("[YouTube Puppeteer] Primo convertitore fallito, provo fallback...");
-  } finally {
-    await browser.close();
+    return {
+      buffer: Buffer.from(audioRes.data),
+      title: videoTitle
+    };
   }
 
-  if (!downloadUrl) {
-    throw new Error("Impossibile convertire il video YouTube tramite i servizi web di fallback.");
-  }
-
-  // Scarica il file MP3 generato dal convertitore
-  const response = await axios.get(downloadUrl, { responseType: "arraybuffer", timeout: 30000 });
-  return Buffer.from(response.data);
+  throw new Error("Risposta non valida dall'API di Cobalt");
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
@@ -196,20 +195,47 @@ app.post("/download", async (req, res) => {
     }
   }
 
-  // CASO 2: YOUTUBE (Evita yt-dlp per blocchi IP ed usa Puppeteer sui convertitori)
+  // CASO 2: YOUTUBE (Gestito tramite Cobalt API con fallback su yt-dlp client spoofing)
   if (link.includes("youtube.com") || link.includes("youtu.be")) {
     try {
-      const audioBuffer = await downloadYouTubeViaWebConverter(link);
-      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_youtube.mp3`);
+      const { buffer, title } = await downloadYouTubeViaCobalt(link);
+      const audioUrl = await uploadAudio(buffer, `${Date.now()}_youtube.mp3`);
 
       return res.json({
         audioUrl,
-        title: "Traccia YouTube",
+        title: title,
         artist: "YouTube",
       });
     } catch (err) {
-      console.error("[Errore YouTube Converter]:", err.message);
-      return res.status(500).json({ error: "Download YouTube fallito: " + err.message });
+      console.warn("[YouTube Cobalt fallito, provo fallback yt-dlp]:", err.message);
+      
+      // Fallback: yt-dlp con spoofing del client mobile
+      const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
+      try {
+        await ytDlp(link, {
+          extractAudio: true,
+          audioFormat: "mp3",
+          output: outputFile,
+          ffmpegLocation: ffmpegPath,
+          noPlaylist: true,
+          format: "bestaudio/best",
+          extractorArgs: "youtube:player_client=android,ios",
+        });
+
+        const audioBuffer = fs.readFileSync(outputFile);
+        const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_youtube.mp3`);
+        if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+
+        return res.json({
+          audioUrl,
+          title: "Traccia YouTube",
+          artist: "YouTube",
+        });
+      } catch (fallbackErr) {
+        if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+        console.error("[Errore YouTube Totale]:", fallbackErr.message);
+        return res.status(500).json({ error: "Download YouTube fallito: " + fallbackErr.message });
+      }
     }
   }
 
