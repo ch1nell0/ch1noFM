@@ -154,12 +154,46 @@ app.get("/formats", async (req, res) => {
   }
 });
 
+// Riconosce link che puntano DIRETTAMENTE a un file audio (es. quelli generati da
+// servizi come typetype.video), individuabili dall'estensione nel percorso.
+// In questi casi non serve affatto yt-dlp: scarichiamo il file così com'è.
+const DIRECT_AUDIO_EXTENSIONS = [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac", ".webm", ".opus"];
+function isDirectAudioUrl(url) {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    return DIRECT_AUDIO_EXTENSIONS.some((ext) => pathname.endsWith(ext));
+  } catch {
+    return false;
+  }
+}
+
 // --- Endpoint 1: link YouTube/SoundCloud/mp3 diretto -> scarica con yt-dlp e carica su Litterbox
 app.post("/download", async (req, res) => {
   const { url: link } = req.body;
   if (!link) return res.status(400).json({ error: "URL mancante." });
 
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
+
+  // --- Percorso rapido: il link è già un file audio diretto (niente yt-dlp) ---
+  if (isDirectAudioUrl(link)) {
+    try {
+      const response = await axios.get(link, { responseType: "arraybuffer" });
+      const audioBuffer = Buffer.from(response.data);
+      const fileName = decodeURIComponent(new URL(link).pathname.split("/").pop());
+      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_${fileName}`);
+
+      return res.json({
+        audioUrl,
+        title: fileName.replace(/\.[^/.]+$/, ""),
+        artist: "Link diretto",
+      });
+    } catch (err) {
+      console.error("Errore download diretto:", err.response?.status || err.message);
+      return res.status(500).json({
+        error: "Download diretto fallito: " + (err.response?.status || err.message),
+      });
+    }
+  }
 
   try {
     const ytOptionsBase = cookiesFilePath
