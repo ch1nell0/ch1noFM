@@ -3,6 +3,7 @@ const cors = require("cors");
 const multer = require("multer");
 const axios = require("axios");
 const FormData = require("form-data");
+const ytdl = require("@distube/ytdl-core");
 const ytDlp = require("yt-dlp-exec");
 const ffmpegPath = require("ffmpeg-static");
 const puppeteer = require("puppeteer");
@@ -133,64 +134,60 @@ async function downloadFromTypeType(url) {
   };
 }
 
-// --- ESTRAZIONE ROBUSTA DI YOUTUBE SENZA YT-DLP ---
-async function downloadYouTubeNoYtDlp(youtubeUrl) {
-  console.log(`[YouTube API Engine] Download per: ${youtubeUrl}`);
+// --- NUOVO ENGINE DEDICATO A YOUTUBE (NATIVO NODE.JS VIA @distube/ytdl-core + FALLBACK COBALT) ---
+async function processYouTubeAudio(youtubeUrl) {
+  console.log(`[YouTube Engine Native] Elaborazione: ${youtubeUrl}`);
 
-  // Metodo 1: Cobalt API (Server Principale)
+  // TENTATIVO 1: Native Node.js ytdl-core
+  try {
+    // Ottieni info sul video
+    const info = await ytdl.getInfo(youtubeUrl, {
+      requestOptions: {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+      }
+    });
+
+    const title = info.videoDetails.title || "Traccia YouTube";
+    const audioStream = ytdl(youtubeUrl, {
+      quality: "highestaudio",
+      filter: "audioonly"
+    });
+
+    const chunks = [];
+    for await (const chunk of audioStream) {
+      chunks.push(chunk);
+    }
+
+    return {
+      buffer: Buffer.concat(chunks),
+      title: title
+    };
+  } catch (err1) {
+    console.warn("[ytdl-core fallito, provo con Cobalt API...]:", err1.message);
+  }
+
+  // TENTATIVO 2: Cobalt API (In caso di bot-check IP severo)
   try {
     const res = await axios.post(
       "https://api.cobalt.tools/api/json",
       { url: youtubeUrl, downloadMode: "audio", audioFormat: "mp3" },
-      { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 15000 }
+      { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 20000 }
     );
+
     if (res.data && res.data.url) {
       const audioRes = await axios.get(res.data.url, { responseType: "arraybuffer", timeout: 30000 });
-      return { buffer: Buffer.from(audioRes.data), title: res.data.filename || "YouTube Audio" };
+      return {
+        buffer: Buffer.from(audioRes.data),
+        title: res.data.filename || "YouTube Track"
+      };
     }
-  } catch (e1) {
-    console.warn("[Cobalt Main Fallito, provo Cobalt Mirror...]:", e1.message);
+  } catch (err2) {
+    console.error("[Cobalt Fallito]:", err2.message);
   }
 
-  // Metodo 2: Cobalt API (Server Mirror/Alternativo)
-  try {
-    const res = await axios.post(
-      "https://co.wuk.sh/api/json",
-      { url: youtubeUrl, downloadMode: "audio", audioFormat: "mp3" },
-      { headers: { Accept: "application/json", "Content-Type": "application/json" }, timeout: 15000 }
-    );
-    if (res.data && res.data.url) {
-      const audioRes = await axios.get(res.data.url, { responseType: "arraybuffer", timeout: 30000 });
-      return { buffer: Buffer.from(audioRes.data), title: res.data.filename || "YouTube Audio" };
-    }
-  } catch (e2) {
-    console.warn("[Cobalt Mirror Fallito, provo Invidious...]:", e2.message);
-  }
-
-  // Metodo 3: Invidious API (Network Open Source Anti-Blocco)
-  try {
-    // Estraiamo l'ID del video da URL tipo youtube.com/watch?v=xxx o youtu.be/xxx
-    const videoIdMatch = youtubeUrl.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    if (!videoIdMatch) throw new Error("ID Video YouTube non valido.");
-    const videoId = videoIdMatch[1];
-
-    const invidiousRes = await axios.get(`https://invidious.nerdvpn.de/api/v1/videos/${videoId}`, { timeout: 15000 });
-    const adaptiveFormats = invidiousRes.data.adaptiveFormats || [];
-    
-    // Trova la traccia audio con la miglior qualità
-    const audioStream = adaptiveFormats
-      .filter((f) => f.type && f.type.startsWith("audio/"))
-      .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
-
-    if (!audioStream || !audioStream.url) throw new Error("Audio stream non trovato su Invidious.");
-
-    const audioRes = await axios.get(audioStream.url, { responseType: "arraybuffer", timeout: 30000 });
-    return { buffer: Buffer.from(audioRes.data), title: invidiousRes.data.title || "YouTube Track" };
-  } catch (e3) {
-    console.error("[Invidious Fallito]:", e3.message);
-  }
-
-  throw new Error("Tutti i servizi esterni di conversione YouTube sono momentaneamente non disponibili.");
+  throw new Error("Impossibile scaricare l'audio YouTube con i downloader correnti.");
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
@@ -198,7 +195,6 @@ app.post("/download", async (req, res) => {
   const { url: link } = req.body;
   if (!link) return res.status(400).json({ error: "URL mancante." });
 
-  // Normalizza il link per i controlli
   const cleanLink = link.trim();
 
   // CASO 1: TYPETYPE VIDEO
@@ -218,14 +214,14 @@ app.post("/download", async (req, res) => {
     }
   }
 
-  // CASO 2: YOUTUBE (TOTALMENTE ISOLATO DA YT-DLP)
+  // CASO 2: YOUTUBE (TOTALMENTE SEPARATO DA YT-DLP)
   if (
     cleanLink.includes("youtube.com") || 
     cleanLink.includes("youtu.be") || 
     cleanLink.includes("music.youtube.com")
   ) {
     try {
-      const { buffer, title } = await downloadYouTubeNoYtDlp(cleanLink);
+      const { buffer, title } = await processYouTubeAudio(cleanLink);
       const audioUrl = await uploadAudio(buffer, `${Date.now()}_youtube.mp3`);
 
       return res.json({
@@ -235,11 +231,11 @@ app.post("/download", async (req, res) => {
       });
     } catch (err) {
       console.error("[Errore YouTube Engine]:", err.message);
-      return res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: "Download YouTube fallito: " + err.message });
     }
   }
 
-  // CASO 3: TUTTI GLI ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc. gestiti da YT-DLP)
+  // CASO 3: ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc. gestiti da YT-DLP)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
     const info = await ytDlp(cleanLink, {
