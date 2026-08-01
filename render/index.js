@@ -19,25 +19,6 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-// --- GESTIONE DYNAMIC COOKIES DI YOUTUBE ---
-const COOKIES_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
-
-function setupCookies() {
-  if (process.env.YT_COOKIES) {
-    try {
-      fs.writeFileSync(COOKIES_PATH, process.env.YT_COOKIES);
-      console.log("[System] File cookies.txt creato con successo in /tmp");
-      return true;
-    } catch (e) {
-      console.error("[System Errore] Impossibile scrivere i cookies:", e.message);
-    }
-  }
-  return false;
-}
-
-// Inizializza i cookie all'avvio del server
-const hasCookies = setupCookies();
-
 // --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
@@ -151,48 +132,61 @@ async function downloadFromTypeType(url) {
   };
 }
 
-// --- ENGINE DOWNLOAD YOUTUBE TRAMITE YT-DLP CON CLIENT SPOOFING E COOKIES ---
-async function downloadYouTubeWithYtDlp(youtubeUrl) {
-  const outputFile = path.join(os.tmpdir(), `yt_${Date.now()}.mp3`);
+// --- ESTRAZIONE ID YOUTUBE ---
+function getYouTubeId(url) {
+  const match = url.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
 
-  const flags = {
-    extractAudio: true,
-    audioFormat: "mp3",
-    output: outputFile,
-    ffmpegLocation: ffmpegPath,
-    noPlaylist: true,
-    format: "bestaudio/best",
-    extractorArgs: "youtube:player_client=android,ios,web",
+// --- IMPLEMENTAZIONE SOLIDIFICATA CON RAPIDAPI ---
+async function downloadYouTubeViaRapidAPI(youtubeUrl) {
+  const apiKey = process.env.RAPIDAPI_KEY;
+  if (!apiKey) {
+    throw new Error("Chiave RAPIDAPI_KEY non configurata nelle variabili d'ambiente.");
+  }
+
+  const videoId = getYouTubeId(youtubeUrl);
+  if (!videoId) {
+    throw new Error("URL YouTube non valido o ID video non trovato.");
+  }
+
+  console.log(`[RapidAPI] Richiesta conversione per Video ID: ${videoId}`);
+
+  // Chiamata all'API REST di conversione su RapidAPI
+  const options = {
+    method: "GET",
+    url: "https://youtube-mp36.p.rapidapi.com/dl",
+    params: { id: videoId },
+    headers: {
+      "X-RapidAPI-Key": apiKey,
+      "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com",
+    },
+    timeout: 20000,
   };
 
-  // Se la variabile d'ambiente YT_COOKIES è stata impostata, la passiamo a yt-dlp
-  if (fs.existsSync(COOKIES_PATH)) {
-    flags.cookies = COOKIES_PATH;
-  }
+  const response = await axios.request(options);
 
-  try {
-    // Recupera prima le informazioni sul titolo
-    const info = await ytDlp(youtubeUrl, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noPlaylist: true,
-      ...(fs.existsSync(COOKIES_PATH) ? { cookies: COOKIES_PATH } : {}),
+  if (response.data && response.data.status === "ok" && response.data.link) {
+    const downloadUrl = response.data.link;
+    const title = response.data.title || "Traccia YouTube";
+
+    // Scarichiamo il file audio MP3 restituito dal link diretto dell'API
+    const audioRes = await axios.get(downloadUrl, {
+      responseType: "arraybuffer",
+      timeout: 30000,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
     });
 
-    // Esegui il download audio
-    await ytDlp(youtubeUrl, flags);
-
-    const buffer = fs.readFileSync(outputFile);
-    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-
     return {
-      buffer: buffer,
-      title: info.title || "YouTube Track",
+      buffer: Buffer.from(audioRes.data),
+      title: title,
     };
-  } catch (err) {
-    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-    throw err;
   }
+
+  throw new Error(
+    `Risposta RapidAPI non valida: ${response.data.msg || "Impossibile convertire il video"}`
+  );
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
@@ -219,15 +213,14 @@ app.post("/download", async (req, res) => {
     }
   }
 
-  // CASO 2: YOUTUBE
+  // CASO 2: YOUTUBE (Gestito interamente via RapidAPI)
   if (
     cleanLink.includes("youtube.com") ||
     cleanLink.includes("youtu.be") ||
     cleanLink.includes("music.youtube.com")
   ) {
     try {
-      console.log(`[YouTube Process] Download in corso per: ${cleanLink}`);
-      const { buffer, title } = await downloadYouTubeWithYtDlp(cleanLink);
+      const { buffer, title } = await downloadYouTubeViaRapidAPI(cleanLink);
       const audioUrl = await uploadAudio(buffer, `${Date.now()}_youtube.mp3`);
 
       return res.json({
@@ -236,15 +229,14 @@ app.post("/download", async (req, res) => {
         artist: "YouTube",
       });
     } catch (err) {
-      console.error("[Errore YouTube yt-dlp]:", err.message);
+      console.error("[Errore RapidAPI YouTube]:", err.message);
       return res.status(500).json({
-        error: "Download YouTube fallito. Se persiste l'errore bot, configura la variabile d'ambiente YT_COOKIES su Render.",
-        details: err.message,
+        error: "Download YouTube via RapidAPI fallito: " + err.message,
       });
     }
   }
 
-  // CASO 3: TUTTI GLI ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc.)
+  // CASO 3: ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc. gestiti da YT-DLP locale)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
     const info = await ytDlp(cleanLink, {
