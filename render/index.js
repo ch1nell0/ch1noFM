@@ -132,61 +132,107 @@ async function downloadFromTypeType(url) {
   };
 }
 
-// --- ESTRAZIONE ID YOUTUBE ---
 function getYouTubeId(url) {
   const match = url.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
 }
 
-// --- IMPLEMENTAZIONE SOLIDIFICATA CON RAPIDAPI ---
-async function downloadYouTubeViaRapidAPI(youtubeUrl) {
-  const apiKey = process.env.RAPIDAPI_KEY;
-  if (!apiKey) {
-    throw new Error("Chiave RAPIDAPI_KEY non configurata nelle variabili d'ambiente.");
-  }
-
+// --- ENGINE DOWNLOAD YOUTUBE (ZERO CHIAVI API) ---
+async function downloadYouTubeAudio(youtubeUrl) {
   const videoId = getYouTubeId(youtubeUrl);
-  if (!videoId) {
-    throw new Error("URL YouTube non valido o ID video non trovato.");
-  }
+  if (!videoId) throw new Error("ID Video YouTube non valido.");
 
-  console.log(`[RapidAPI] Richiesta conversione per Video ID: ${videoId}`);
+  console.log(`[YouTube REST Engine] Download per ID: ${videoId}`);
 
-  // Chiamata all'API REST di conversione su RapidAPI
-  const options = {
-    method: "GET",
-    url: "https://youtube-mp36.p.rapidapi.com/dl",
-    params: { id: videoId },
-    headers: {
-      "X-RapidAPI-Key": apiKey,
-      "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com",
-    },
-    timeout: 20000,
-  };
-
-  const response = await axios.request(options);
-
-  if (response.data && response.data.status === "ok" && response.data.link) {
-    const downloadUrl = response.data.link;
-    const title = response.data.title || "Traccia YouTube";
-
-    // Scarichiamo il file audio MP3 restituito dal link diretto dell'API
-    const audioRes = await axios.get(downloadUrl, {
-      responseType: "arraybuffer",
-      timeout: 30000,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
+  // METODO 1: Mirror API Open Source 
+  try {
+    console.log("[YouTube Engine] Tentativo 1: API Direct Stream...");
+    const res = await axios.get(`https://api.vkrdown.com/api/yt?url=${encodeURIComponent(youtubeUrl)}`, {
+      timeout: 15000,
     });
 
-    return {
-      buffer: Buffer.from(audioRes.data),
-      title: title,
-    };
+    if (res.data && res.data.data && res.data.data.download) {
+      const audioObj = res.data.data.download.find(d => d.format === "mp3" || d.type === "audio") || res.data.data.download[0];
+      if (audioObj && audioObj.url) {
+        const audioRes = await axios.get(audioObj.url, { responseType: "arraybuffer", timeout: 30000 });
+        return {
+          buffer: Buffer.from(audioRes.data),
+          title: res.data.data.title || "YouTube Track",
+        };
+      }
+    }
+  } catch (e1) {
+    console.warn(`[API Direct Stream Fallita]: ${e1.message}`);
   }
 
-  throw new Error(
-    `Risposta RapidAPI non valida: ${response.data.msg || "Impossibile convertire il video"}`
-  );
+  // METODO 2: Y2Mate Converter Gateway
+  try {
+    console.log("[YouTube Engine] Tentativo 2: Gateway Y2Mate...");
+    const initRes = await axios.post(
+      "https://www me.y2mate.is/api/ajax/search",
+      new URLSearchParams({ query: youtubeUrl }),
+      {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        timeout: 15000
+      }
+    );
+
+    if (initRes.data && initRes.data.links && initRes.data.links.mp3) {
+      const firstMp3Key = Object.keys(initRes.data.links.mp3)[0];
+      const k = initRes.data.links.mp3[firstMp3Key].k;
+
+      const convertRes = await axios.post(
+        "https://www.y2mate.is/api/ajax/convert",
+        new URLSearchParams({ k: k, vid: videoId }),
+        {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          timeout: 20000
+        }
+      );
+
+      if (convertRes.data && convertRes.data.dlink) {
+        const audioRes = await axios.get(convertRes.data.dlink, { responseType: "arraybuffer", timeout: 30000 });
+        return {
+          buffer: Buffer.from(audioRes.data),
+          title: initRes.data.title || "YouTube Track"
+        };
+      }
+    }
+  } catch (e2) {
+    console.warn(`[Gateway Y2Mate Fallito]: ${e2.message}`);
+  }
+
+  // METODO 3: Cobalt API Public Instance Proxy
+  try {
+    console.log("[YouTube Engine] Tentativo 3: Cobalt Open Proxy...");
+    const res = await axios.post(
+      "https://co.wuk.sh/api/json",
+      {
+        url: youtubeUrl,
+        isAudioOnly: true,
+        aFormat: "mp3"
+      },
+      {
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        timeout: 15000
+      }
+    );
+
+    if (res.data && res.data.url) {
+      const audioRes = await axios.get(res.data.url, { responseType: "arraybuffer", timeout: 30000 });
+      return {
+        buffer: Buffer.from(audioRes.data),
+        title: "YouTube Track"
+      };
+    }
+  } catch (e3) {
+    console.warn(`[Cobalt Proxy Fallito]: ${e3.message}`);
+  }
+
+  throw new Error("Tutti i server di conversione REST sono momentaneamente occupati o irraggiungibili.");
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
@@ -213,14 +259,14 @@ app.post("/download", async (req, res) => {
     }
   }
 
-  // CASO 2: YOUTUBE (Gestito interamente via RapidAPI)
+  // CASO 2: YOUTUBE
   if (
     cleanLink.includes("youtube.com") ||
     cleanLink.includes("youtu.be") ||
     cleanLink.includes("music.youtube.com")
   ) {
     try {
-      const { buffer, title } = await downloadYouTubeViaRapidAPI(cleanLink);
+      const { buffer, title } = await downloadYouTubeAudio(cleanLink);
       const audioUrl = await uploadAudio(buffer, `${Date.now()}_youtube.mp3`);
 
       return res.json({
@@ -229,14 +275,14 @@ app.post("/download", async (req, res) => {
         artist: "YouTube",
       });
     } catch (err) {
-      console.error("[Errore RapidAPI YouTube]:", err.message);
+      console.error("[Errore Finale YouTube]:", err.message);
       return res.status(500).json({
-        error: "Download YouTube via RapidAPI fallito: " + err.message,
+        error: "Download YouTube fallito: " + err.message,
       });
     }
   }
 
-  // CASO 3: ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc. gestiti da YT-DLP locale)
+  // CASO 3: ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc.)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
     const info = await ytDlp(cleanLink, {
