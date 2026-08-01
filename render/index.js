@@ -139,129 +139,156 @@ function extractYouTubeId(url) {
   return match ? match[1] : null;
 }
 
-// --- ENGINE MULTI-DOWNLOADER PER YOUTUBE ---
+// --- ENGINE MULTI-DOWNLOADER PER YOUTUBE (AGGIORNATO) ---
 async function processYouTubeAudio(youtubeUrl) {
   console.log(`[YouTube Engine Multi-Provider] Elaborazione: ${youtubeUrl}`);
   const videoId = extractYouTubeId(youtubeUrl);
 
-  // --- LIVALLO 1: Cobalt API con Header Custom ---
+  if (!videoId) {
+    throw new Error("URL di YouTube non valido (ID video non trovato).");
+  }
+
+  // --- LIVELLO 1: CNVMP3 API Engine ---
   try {
-    console.log("[YouTube Engine] Tentativo 1: Cobalt API...");
-    const res = await axios.post(
-      "https://api.cobalt.tools/api/json",
-      {
-        url: youtubeUrl,
-        downloadMode: "audio",
-        audioFormat: "mp3"
-      },
+    console.log("[YouTube Engine] Tentativo 1: CNVMP3 API...");
+    const initRes = await axios.post(
+      "https://cnvmp3.com/api/convert",
+      { url: youtubeUrl, format: "mp3", quality: "128" },
       {
         headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json",
-          "Origin": "https://cobalt.tools",
-          "Referer": "https://cobalt.tools/",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Referer": "https://cnvmp3.com/",
+          "Origin": "https://cnvmp3.com"
         },
-        timeout: 15000
+        timeout: 10000
       }
     );
 
-    if (res.data && res.data.url) {
-      const audioRes = await axios.get(res.data.url, { responseType: "arraybuffer", timeout: 30000 });
+    if (initRes.data && (initRes.data.url || initRes.data.downloadUrl)) {
+      const downloadLink = initRes.data.url || initRes.data.downloadUrl;
+      const audioRes = await axios.get(downloadLink, { responseType: "arraybuffer", timeout: 30000 });
       return {
         buffer: Buffer.from(audioRes.data),
-        title: res.data.filename || "YouTube Track"
+        title: initRes.data.title || "YouTube Track (CNVMP3)"
       };
     }
   } catch (e1) {
-    console.warn(`[Cobalt API Fallito]: ${e1.message}`);
+    console.warn(`[CNVMP3 API Fallito]: ${e1.message}`);
   }
 
-  // --- LIVELLO 2: Invidious Public API Engine ---
-  if (videoId) {
-    try {
-      console.log("[YouTube Engine] Tentativo 2: Invidious API...");
-      const instances = [
-        "https://invidious.nerdvpn.de",
-        "https://inv.tux.pizza",
-        "https://invidious.drgns.space"
-      ];
+  // --- LIVELLO 2: OGMP3 API Engine ---
+  try {
+    console.log("[YouTube Engine] Tentativo 2: OGMP3 Engine...");
+    const ogRes = await axios.get(`https://ogmp3.com/api/ajax/search`, {
+      params: { query: youtubeUrl, vt: "mp3" },
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://ogmp3.com/"
+      },
+      timeout: 10000
+    });
 
-      for (const instance of instances) {
-        try {
-          const invRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, { timeout: 8000 });
-          const formats = invRes.data.adaptiveFormats || [];
-          const audioFormat = formats
-            .filter((f) => f.type && f.type.startsWith("audio/"))
-            .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
+    if (ogRes.data && ogRes.data.links && ogRes.data.links.mp3) {
+      const mp3Keys = Object.keys(ogRes.data.links.mp3);
+      const k = ogRes.data.links.mp3[mp3Keys[0]].k;
 
-          if (audioFormat && audioFormat.url) {
-            const streamRes = await axios.get(audioFormat.url, { responseType: "arraybuffer", timeout: 30000 });
-            return {
-              buffer: Buffer.from(streamRes.data),
-              title: invRes.data.title || "YouTube Track"
-            };
-          }
-        } catch (instErr) {
-          continue; // Prova l'istanza successiva
+      const convertRes = await axios.post(
+        "https://ogmp3.com/api/ajax/convert",
+        new URLSearchParams({ vid: videoId, k: k }),
+        {
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "X-Requested-With": "XMLHttpRequest"
+          },
+          timeout: 15000
         }
-      }
-    } catch (e2) {
-      console.warn(`[Invidious Engine Fallito]: ${e2.message}`);
-    }
-  }
+      );
 
-  // --- LIVELLO 3: Piped API Engine ---
-  if (videoId) {
-    try {
-      console.log("[YouTube Engine] Tentativo 3: Piped API...");
-      const pipedRes = await axios.get(`https://pipedapi.kavin.rocks/streams/${videoId}`, { timeout: 10000 });
-      const audioStreams = pipedRes.data.audioStreams || [];
-
-      if (audioStreams.length > 0) {
-        const bestAudio = audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-        const streamRes = await axios.get(bestAudio.url, { responseType: "arraybuffer", timeout: 30000 });
+      if (convertRes.data && convertRes.data.dlink) {
+        const audioRes = await axios.get(convertRes.data.dlink, { responseType: "arraybuffer", timeout: 30000 });
         return {
-          buffer: Buffer.from(streamRes.data),
-          title: pipedRes.data.title || "YouTube Track"
+          buffer: Buffer.from(audioRes.data),
+          title: ogRes.data.title || "YouTube Track (OGMP3)"
         };
       }
-    } catch (e3) {
-      console.warn(`[Piped Engine Fallito]: ${e3.message}`);
     }
+  } catch (e2) {
+    console.warn(`[OGMP3 Engine Fallito]: ${e2.message}`);
   }
 
-  // --- LIVELLO 4: Fallback Native @distube/ytdl-core ---
+  // --- LIVELLO 3: Y2Meta Engine ---
   try {
-    console.log("[YouTube Engine] Tentativo 4: ytdl-core...");
-    const info = await ytdl.getInfo(youtubeUrl, {
-      requestOptions: {
+    console.log("[YouTube Engine] Tentativo 3: Y2Meta Engine...");
+    const y2Res = await axios.post(
+      "https://y2meta.co.com/api/ajax/search",
+      new URLSearchParams({ q: youtubeUrl, vt: "mp3" }),
+      {
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        }
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        timeout: 10000
       }
-    });
+    );
 
-    const title = info.videoDetails.title || "Traccia YouTube";
-    const audioStream = ytdl(youtubeUrl, {
-      quality: "highestaudio",
-      filter: "audioonly"
-    });
+    if (y2Res.data && y2Res.data.links && y2Res.data.links.mp3) {
+      const mp3Keys = Object.keys(y2Res.data.links.mp3);
+      const key = y2Res.data.links.mp3[mp3Keys[0]].k;
 
-    const chunks = [];
-    for await (const chunk of audioStream) {
-      chunks.push(chunk);
+      const convertRes = await axios.post(
+        "https://y2meta.co.com/api/ajax/convert",
+        new URLSearchParams({ vid: videoId, k: key }),
+        {
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          },
+          timeout: 15000
+        }
+      );
+
+      if (convertRes.data && convertRes.data.dlink) {
+        const audioRes = await axios.get(convertRes.data.dlink, { responseType: "arraybuffer", timeout: 30000 });
+        return {
+          buffer: Buffer.from(audioRes.data),
+          title: y2Res.data.title || "YouTube Track (Y2Meta)"
+        };
+      }
     }
-
-    return {
-      buffer: Buffer.concat(chunks),
-      title: title
-    };
-  } catch (e4) {
-    console.warn(`[ytdl-core Fallito]: ${e4.message}`);
+  } catch (e3) {
+    console.warn(`[Y2Meta Engine Fallito]: ${e3.message}`);
   }
 
-  throw new Error("Tutti e 4 i downloader di YouTube sono attualmente bloccati o non disponibili.");
+  // --- LIVELLO 4: Fallback Nativo con Local yt-dlp Executable ---
+  try {
+    console.log("[YouTube Engine] Tentativo 4: yt-dlp-exec (Locale)...");
+    const tempFile = path.join(os.tmpdir(), `yt_${Date.now()}.mp3`);
+
+    await ytDlp(youtubeUrl, {
+      extractAudio: true,
+      audioFormat: "mp3",
+      output: tempFile,
+      ffmpegLocation: ffmpegPath,
+      noPlaylist: true,
+      format: "bestaudio/best"
+    });
+
+    if (fs.existsSync(tempFile)) {
+      const buffer = fs.readFileSync(tempFile);
+      fs.unlinkSync(tempFile);
+      return {
+        buffer: buffer,
+        title: "YouTube Track (yt-dlp)"
+      };
+    }
+  } catch (e4) {
+    console.warn(`[yt-dlp Fallito]: ${e4.message}`);
+  }
+
+  throw new Error("Tutti i downloader alternativi (CNVMP3, OGMP3, Y2Meta, yt-dlp) hanno fallito o non sono raggiungibili.");
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
@@ -288,7 +315,7 @@ app.post("/download", async (req, res) => {
     }
   }
 
-  // CASO 2: YOUTUBE (Gestito dal motore multi-downloader)
+  // CASO 2: YOUTUBE (Gestito dal nuovo motore multi-downloader)
   if (
     cleanLink.includes("youtube.com") || 
     cleanLink.includes("youtu.be") || 
