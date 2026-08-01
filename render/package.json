@@ -1,10 +1,10 @@
 {
   "name": "ch1nofm-backend",
   "version": "1.0.0",
-  "description": "Backend per ch1noFM con yt-dlp e fallback upload",
+  "description": "Backend per ch1noFM",
   "main": "server.js",
   "scripts": {
-    "build": "npm install && npx yt-dlp-exec --update",
+    "build": "npm install",
     "start": "node server.js"
   },
   "dependencies": {
