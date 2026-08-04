@@ -9,9 +9,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
 
-    <!-- Firebase SDK -->
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <!-- Supabase SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
@@ -86,22 +85,16 @@
     </div>
 
     <script>
-        const firebaseConfig = {
-            apiKey: "AIzaSyBUwe1HzAUTn5xVs7af_w2SaUXzyvUKJM4",
-            authDomain: "ch1nofm.firebaseapp.com",
-            projectId: "ch1nofm",
-            storageBucket: "ch1nofm.firebasestorage.app",
-            messagingSenderId: "536090181047",
-            appId: "1:536090181047:web:b159ecacb465fbae767c32"
-        };
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.firestore();
+        // --- CONFIGURAZIONE SUPABASE ---
+        // Prendi questi due valori da: Dashboard Supabase -> Project Settings -> API
+        const SUPABASE_URL = "https://TUO-PROGETTO.supabase.co";
+        const SUPABASE_ANON_KEY = "TUA_ANON_KEY";
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
         localStorage.setItem("radio_uid", userId);
 
-        // URL del servizio esterno che scarica l'audio via yt-dlp (Render.com o simili).
-        // Sostituisci con l'URL reale dopo il deploy del server in /downloader-server.
+        // URL del backend Render (yt-dlp + upload).
         const BACKEND_URL = "https://ch1nofm.onrender.com";
 
         function enableAudio() {
@@ -128,7 +121,7 @@
         }
 
         // Invia il file locale al backend, che lo carica su Litterbox (gratuito)
-        // e restituisce l'URL diretto. Sostituisce l'upload su Firebase Storage.
+        // e restituisce l'URL diretto.
         async function requestUpload(file) {
             const formData = new FormData();
             formData.append("file", file);
@@ -156,10 +149,7 @@
             statusMsg.innerText = "⏳ Inserimento in corso...";
 
             try {
-                let songData = {
-                    requestedBy: userId,
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                };
+                let songData = { requestedBy: userId };
 
                 if (file) {
                     if (file.size > 25 * 1024 * 1024) {
@@ -169,8 +159,6 @@
                         return;
                     }
 
-                    // Il file passa dal backend, che lo carica su Litterbox (gratuito,
-                    // nessun account, nessun piano a pagamento Firebase richiesto).
                     statusMsg.innerText = "⏫ Caricamento file in corso...";
                     const result = await requestUpload(file);
                     songData.type = "mp3";
@@ -179,9 +167,6 @@
                     songData.artist = result.artist;
 
                 } else if (link) {
-                    // Ogni link (YouTube, SoundCloud, Bandcamp, mp3 diretto, ecc.) passa
-                    // dal backend con yt-dlp, che scarica/estrae l'audio e lo carica
-                    // temporaneamente e gratuitamente su Litterbox (catbox.moe).
                     statusMsg.innerText = "⏬ Download in corso (può richiedere fino a 1 minuto)...";
                     const result = await requestDownload(link);
                     songData.type = "mp3";
@@ -196,7 +181,15 @@
                     return;
                 }
 
-                await db.collection("queue").add(songData);
+                const { error: insertError } = await supabase.from("queue").insert({
+                    type: songData.type,
+                    title: songData.title,
+                    artist: songData.artist,
+                    audio_url: songData.audioUrl,
+                    requested_by: songData.requestedBy,
+                });
+                if (insertError) throw new Error(insertError.message);
+
                 statusMsg.style.color = "#10b981";
                 statusMsg.innerText = "✅ Inserito in coda!";
                 document.getElementById("song-link").value = "";
@@ -211,53 +204,45 @@
             }
         }
 
-        db.collection("queue").orderBy("createdAt", "asc").onSnapshot(snapshot => {
+        // --- CODA: caricamento iniziale + realtime ---
+        function renderQueue(items) {
             const queueListEl = document.getElementById("queue-list");
-            if (snapshot.empty) {
+            if (!items || items.length === 0) {
                 queueListEl.innerHTML = '<li style="color: #64748b; font-size: 0.85rem; text-align: center;">La coda è vuota.</li>';
                 return;
             }
-            let html = "";
-            snapshot.docs.forEach((doc, index) => {
-                const item = doc.data();
-                html += `<li class="queue-item">#${index + 1} ${item.title} - ${item.artist}</li>`;
-            });
-            queueListEl.innerHTML = html;
-        });
-
-        async function forceCheckQueue() {
-            const currentDoc = await db.collection("radioState").doc("current").get();
-            if (!currentDoc.exists) advanceQueue();
+            queueListEl.innerHTML = items
+                .map((item, index) => `<li class="queue-item">#${index + 1} ${item.title} - ${item.artist}</li>`)
+                .join("");
         }
 
-        async function advanceQueue() {
-            const queueSnapshot = await db.collection("queue").orderBy("createdAt", "asc").limit(1).get();
-            if (queueSnapshot.empty) {
-                await db.collection("radioState").doc("current").delete();
-                return;
-            }
-            const nextSongDoc = queueSnapshot.docs[0];
-            await db.collection("radioState").doc("current").set({
-                ...nextSongDoc.data(),
-                startTime: firebase.firestore.FieldValue.serverTimestamp()
-            });
-            await nextSongDoc.ref.delete();
+        async function loadQueue() {
+            const { data, error } = await supabase
+                .from("queue")
+                .select("*")
+                .order("created_at", { ascending: true });
+            if (error) { console.error("Errore caricamento coda:", error.message); return; }
+            renderQueue(data);
         }
 
-        function forceSkip() { advanceQueue(); }
+        supabase
+            .channel("queue-changes")
+            .on("postgres_changes", { event: "*", schema: "public", table: "queue" }, loadQueue)
+            .subscribe();
 
+        loadQueue();
+
+        // --- STATO RADIO (brano corrente): caricamento iniziale + realtime ---
         const audioPlayer = document.getElementById('radio-player');
         const mediaContainer = document.getElementById('media-container');
 
-        // Se un file audio in coda fallisce (link morto, formato non supportato ecc.)
-        // passiamo automaticamente al brano successivo invece di restare bloccati.
         audioPlayer.addEventListener('error', () => {
             console.warn("Errore riproduzione audio, skip automatico.");
             advanceQueue();
         });
 
-        db.collection("radioState").doc("current").onSnapshot(doc => {
-            if (!doc.exists) {
+        function renderCurrent(data) {
+            if (!data) {
                 audioPlayer.pause();
                 audioPlayer.removeAttribute('src');
                 audioPlayer.style.display = "none";
@@ -268,29 +253,81 @@
                 return;
             }
 
-            const data = doc.data();
             document.getElementById('song-title').innerText = data.title;
             document.getElementById('song-artist').innerText = data.artist;
-            document.getElementById('requested-by').innerText = data.requestedBy;
+            document.getElementById('requested-by').innerText = data.requested_by;
 
             let startOffset = 0;
-            if (data.startTime) {
-                startOffset = Math.floor(Math.max(0, (Date.now() - data.startTime.toMillis()) / 1000));
+            if (data.start_time) {
+                startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
             }
 
-            // Tutti i brani sono ormai veri file audio (scaricati via backend o caricati
-            // dall'utente), quindi si usa sempre il player audio nativo.
             mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
             audioPlayer.style.display = "block";
 
-            if (audioPlayer.src !== data.audioUrl) {
-                audioPlayer.src = data.audioUrl;
+            if (audioPlayer.src !== data.audio_url) {
+                audioPlayer.src = data.audio_url;
             }
             if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
                 audioPlayer.currentTime = startOffset;
             }
             audioPlayer.play().catch(() => {});
-        });
+        }
+
+        async function loadCurrent() {
+            const { data, error } = await supabase
+                .from("radio_state")
+                .select("*")
+                .eq("id", "current")
+                .maybeSingle();
+            if (error) { console.error("Errore caricamento stato radio:", error.message); return; }
+            renderCurrent(data);
+        }
+
+        supabase
+            .channel("state-changes")
+            .on("postgres_changes", { event: "*", schema: "public", table: "radio_state" }, loadCurrent)
+            .subscribe();
+
+        loadCurrent();
+
+        // --- AVANZAMENTO CODA ---
+        async function forceCheckQueue() {
+            const { data } = await supabase
+                .from("radio_state")
+                .select("id")
+                .eq("id", "current")
+                .maybeSingle();
+            if (!data) advanceQueue();
+        }
+
+        async function advanceQueue() {
+            const { data: nextSongs, error: fetchError } = await supabase
+                .from("queue")
+                .select("*")
+                .order("created_at", { ascending: true })
+                .limit(1);
+
+            if (fetchError) { console.error("Errore lettura coda:", fetchError.message); return; }
+
+            if (!nextSongs || nextSongs.length === 0) {
+                await supabase.from("radio_state").delete().eq("id", "current");
+                return;
+            }
+
+            const next = nextSongs[0];
+            await supabase.from("radio_state").upsert({
+                id: "current",
+                title: next.title,
+                artist: next.artist,
+                audio_url: next.audio_url,
+                requested_by: next.requested_by,
+                start_time: new Date().toISOString(),
+            });
+            await supabase.from("queue").delete().eq("id", next.id);
+        }
+
+        function forceSkip() { advanceQueue(); }
     </script>
 </body>
 </html>
