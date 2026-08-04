@@ -18,4 +18,8 @@
     "yt-dlp-exec": "latest",
     "ffmpeg-static": "^5.2.0"
   }
+  "scripts": {
+  "build": "npm install && mkdir -p yt-dlp-plugins && curl -L -o plugin.zip https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip && unzip -o plugin.zip -d yt-dlp-plugins && rm plugin.zip",
+  "start": "node index.js"
+}
 }
