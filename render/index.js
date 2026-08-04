@@ -143,7 +143,17 @@ async function downloadYouTubeAudio(youtubeUrl) {
   if (!videoId) throw new Error("ID Video YouTube non valido.");
 
   console.log(`[YouTube REST Engine] Download per ID: ${videoId}`);
-
+  
+  await ytDlp(youtubeUrl, {
+    extractAudio: true,
+    audioFormat: "mp3",
+    output: outputFile,
+    ffmpegLocation: ffmpegPath,
+    pluginDirs: "./yt-dlp-plugins",
+    extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
+    // eventualmente anche cookies se le hai: cookies: "/percorso/cookies.txt"
+  });
+  
   // METODO 1: Mirror API Open Source 
   try {
     console.log("[YouTube Engine] Tentativo 1: API Direct Stream...");
