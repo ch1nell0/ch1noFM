@@ -19,6 +19,9 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+// --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
+app.get("/health", (req, res) => res.status(200).send("OK"));
+
 // --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
@@ -137,7 +140,7 @@ function getYouTubeId(url) {
   return match ? match[1] : null;
 }
 
-// --- ENGINE DOWNLOAD YOUTUBE (ZERO CHIAVI API) ---
+// --- ENGINE DOWNLOAD YOUTUBE (yt-dlp+POT come primo tentativo, poi fallback REST) ---
 async function downloadYouTubeAudio(youtubeUrl) {
   const videoId = getYouTubeId(youtubeUrl);
   if (!videoId) throw new Error("ID Video YouTube non valido.");
@@ -149,12 +152,16 @@ async function downloadYouTubeAudio(youtubeUrl) {
   try {
     console.log("[YouTube Engine] Tentativo 0: yt-dlp + bgutil POT...");
 
+    const commonArgs = {
+      pluginDirs: "./yt-dlp-plugins",
+      extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
+    };
+
     const info = await ytDlp(youtubeUrl, {
       dumpSingleJson: true,
       noWarnings: true,
       noPlaylist: true,
-      pluginDirs: "./yt-dlp-plugins",
-      extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
+      ...commonArgs,
     });
 
     await ytDlp(youtubeUrl, {
@@ -164,8 +171,7 @@ async function downloadYouTubeAudio(youtubeUrl) {
       ffmpegLocation: ffmpegPath,
       noPlaylist: true,
       format: "bestaudio/best",
-      pluginDirs: "./yt-dlp-plugins",
-      extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
+      ...commonArgs,
     });
 
     const buffer = fs.readFileSync(outputFile);
@@ -178,10 +184,6 @@ async function downloadYouTubeAudio(youtubeUrl) {
   }
 
   // METODO 1: Mirror API Open Source
-  try {
-    // ... (resto invariato, come Tentativo 1 che avevi già)
-  
-  // METODO 1: Mirror API Open Source 
   try {
     console.log("[YouTube Engine] Tentativo 1: API Direct Stream...");
     const res = await axios.get(`https://api.vkrdown.com/api/yt?url=${encodeURIComponent(youtubeUrl)}`, {
@@ -206,7 +208,7 @@ async function downloadYouTubeAudio(youtubeUrl) {
   try {
     console.log("[YouTube Engine] Tentativo 2: Gateway Y2Mate...");
     const initRes = await axios.post(
-      "https://www me.y2mate.is/api/ajax/search",
+      "https://www.y2mate.is/api/ajax/search",
       new URLSearchParams({ query: youtubeUrl }),
       {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -269,7 +271,7 @@ async function downloadYouTubeAudio(youtubeUrl) {
     console.warn(`[Cobalt Proxy Fallito]: ${e3.message}`);
   }
 
-  throw new Error("Tutti i server di conversione REST sono momentaneamente occupati o irraggiungibili.");
+  throw new Error("Tutti i metodi di download YouTube sono momentaneamente falliti o irraggiungibili.");
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
