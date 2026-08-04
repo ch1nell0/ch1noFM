@@ -142,17 +142,44 @@ async function downloadYouTubeAudio(youtubeUrl) {
   const videoId = getYouTubeId(youtubeUrl);
   if (!videoId) throw new Error("ID Video YouTube non valido.");
 
-  console.log(`[YouTube REST Engine] Download per ID: ${videoId}`);
-  
-  await ytDlp(youtubeUrl, {
-    extractAudio: true,
-    audioFormat: "mp3",
-    output: outputFile,
-    ffmpegLocation: ffmpegPath,
-    pluginDirs: "./yt-dlp-plugins",
-    extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
-    // eventualmente anche cookies se le hai: cookies: "/percorso/cookies.txt"
-  });
+  console.log(`[YouTube Engine] Download per ID: ${videoId}`);
+
+  // METODO 0: yt-dlp diretto + plugin bgutil (PO token) - il più affidabile quando disponibile
+  const outputFile = path.join(os.tmpdir(), `yt_${videoId}_${Date.now()}.mp3`);
+  try {
+    console.log("[YouTube Engine] Tentativo 0: yt-dlp + bgutil POT...");
+
+    const info = await ytDlp(youtubeUrl, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      noPlaylist: true,
+      pluginDirs: "./yt-dlp-plugins",
+      extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
+    });
+
+    await ytDlp(youtubeUrl, {
+      extractAudio: true,
+      audioFormat: "mp3",
+      output: outputFile,
+      ffmpegLocation: ffmpegPath,
+      noPlaylist: true,
+      format: "bestaudio/best",
+      pluginDirs: "./yt-dlp-plugins",
+      extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
+    });
+
+    const buffer = fs.readFileSync(outputFile);
+    fs.unlinkSync(outputFile);
+
+    return { buffer, title: info.title || "YouTube Track" };
+  } catch (e0) {
+    console.warn(`[yt-dlp + bgutil Fallito]: ${e0.message}`);
+    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+  }
+
+  // METODO 1: Mirror API Open Source
+  try {
+    // ... (resto invariato, come Tentativo 1 che avevi già)
   
   // METODO 1: Mirror API Open Source 
   try {
