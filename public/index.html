@@ -12,9 +12,6 @@
     <!-- Supabase SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
-    <!-- Player YouTube nascosto (solo audio) + sync -->
-    <script src="youtube-radio.js"></script>
-
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
         body { background-color: #0d0e12; color: #f1f5f9; display: flex; justify-content: center; padding: 20px; min-height: 100vh; }
@@ -28,7 +25,7 @@
         .song-artist { font-size: 0.95rem; color: #94a3b8; margin-bottom: 12px; }
         .requested-by { font-size: 0.85rem; color: #64748b; background: #1e212b; padding: 6px 14px; border-radius: 8px; display: inline-block; margin-bottom: 16px; }
         audio { width: 100%; margin-bottom: 16px; filter: invert(0.9) hue-rotate(180deg); }
-        .yt-badge { display: inline-block; font-size: 0.75rem; color: #f59e0b; background: rgba(245, 158, 11, 0.12); padding: 3px 10px; border-radius: 6px; margin-bottom: 12px; }
+        iframe { width: 100%; height: 210px; border-radius: 12px; border: none; margin-bottom: 16px; }
         .skip-btn { background: #ef4444; color: white; border: none; padding: 12px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
         .queue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
         .queue-item { background: #1e212b; padding: 10px 14px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
@@ -45,11 +42,11 @@
 
     <div class="main-container">
         <div class="player-card">
-            <button class="start-audio-btn" id="enable-audio-btn" onclick="enableAudio()">🔊 AVVIA STREAM RADIO</button>
+            <button class="start-audio-btn" id="enable-audio-btn">🔊 AVVIA STREAM RADIO</button>
 
             <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
 
-            <!-- Contenitore Copertina (il video YouTube vero resta nascosto altrove) -->
+            <!-- Contenitore Copertina / Video YouTube -->
             <div id="media-container">
                 <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
             </div>
@@ -87,14 +84,13 @@
         </div>
     </div>
 
+    <!-- youtube-radio.js: player YouTube nascosto (deve essere servito come /youtube-radio.js dal tuo server static public) -->
+    <script src="/youtube-radio.js"></script>
+
     <script>
         // --- CONFIGURAZIONE SUPABASE ---
         const SUPABASE_URL = "https://vpkpyepszskgustruoyl.supabase.co";
         const SUPABASE_ANON_KEY = "sb_publishable__C7yHVyoeO0EAEOKOnSnLw_ebv3Zpp2";
-        // NB: la variabile si chiama "sb" e non "supabase" perché la libreria
-        // espone già window.supabase come proprietà globale non configurabile:
-        // dichiarare "const supabase = ..." causa un SyntaxError che blocca
-        // il parsing dell'intero script (e quindi anche tutte le onclick).
         const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
@@ -103,19 +99,35 @@
         // URL del backend Render (yt-dlp + upload).
         const BACKEND_URL = "https://ch1nofm.onrender.com";
 
-        function enableAudio() {
-            const player = document.getElementById('radio-player');
-            player.play().catch(() => {});
-            if (window.ChinoFMYouTube) ChinoFMYouTube.unlock();
-            document.getElementById("enable-audio-btn").innerText = "✅ AUDIO PRONTO";
-            document.getElementById("enable-audio-btn").style.background = "#10b981";
-            document.getElementById("enable-audio-btn").style.color = "#fff";
+        // --- Helper: normalize/extract YouTube ID from many link forms ---
+        function getYouTubeIdFromAny(url) {
+          if (!url || typeof url !== 'string') return null;
+          // clean spaces
+          const s = url.trim();
+          // direct id
+          if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+          // patterns
+          const m = s.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+          return m ? m[1] : null;
         }
 
-        // Helper: fa il fetch e prova a leggere JSON, ma se il backend risponde
-        // con qualcosa che non è JSON (es. Render "sta ancora deployando" /
-        // 502 Bad Gateway / servizio sospeso) da' un errore leggibile invece
-        // di far esplodere res.json() con "Unexpected token '<'".
+        // enable audio: tries to unlock both native audio element and YouTube hidden player
+        document.getElementById('enable-audio-btn').addEventListener('click', () => {
+            const player = document.getElementById('radio-player');
+            player.play().catch(() => {});
+            // unlock YouTube hidden player if available
+            try {
+                if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.unlock === 'function') {
+                    window.ChinoFMYouTube.unlock();
+                }
+            } catch (e) {}
+            const btn = document.getElementById("enable-audio-btn");
+            btn.innerText = "✅ AUDIO PRONTO";
+            btn.style.background = "#10b981";
+            btn.style.color = "#fff";
+        });
+
+        // Helper: fetchJson like before
         async function fetchJson(url, options) {
             let res;
             try {
@@ -123,7 +135,7 @@
             } catch (networkErr) {
                 throw new Error(
                     "Impossibile contattare il backend (" + BACKEND_URL + "). " +
-                    "Potrebbe essere ancora in fase di avvio (Render free tier): riprova tra 30-60 secondi."
+                    "Potrebbe essere ancora in fase di avvio: riprova tra 30-60 secondi."
                 );
             }
 
@@ -134,8 +146,7 @@
             } catch (parseErr) {
                 console.error("Risposta non-JSON dal backend:", raw.slice(0, 300));
                 throw new Error(
-                    "Il backend ha risposto in modo inatteso (probabilmente sta ancora avviandosi o è andato in errore su Render). " +
-                    "Controlla i log su Render."
+                    "Il backend ha risposto in modo inatteso (controlla i log su Render)."
                 );
             }
 
@@ -145,10 +156,6 @@
             return data;
         }
 
-        // Chiede al backend esterno di elaborare il link. Per YouTube restituisce
-        // solo { source: "youtube", youtubeId, title, artist }. Per tutto il resto
-        // (mp3 diretti, SoundCloud, Bandcamp, TypeType...) restituisce
-        // { source: "file", audioUrl, title, artist }.
         async function requestDownload(link) {
             return fetchJson(`${BACKEND_URL}/download`, {
                 method: "POST",
@@ -157,8 +164,6 @@
             });
         }
 
-        // Invia il file locale al backend, che lo carica su Litterbox (gratuito)
-        // e restituisce l'URL diretto.
         async function requestUpload(file) {
             const formData = new FormData();
             formData.append("file", file);
@@ -169,6 +174,7 @@
             });
         }
 
+        // --- submit handler: supporta MP3 upload OR YouTube link (backend returns source) ---
         async function handleFormSubmit() {
             const statusMsg = document.getElementById("status-msg");
             const submitBtn = document.getElementById("submit-btn");
@@ -181,7 +187,7 @@
             statusMsg.innerText = "⏳ Inserimento in corso...";
 
             try {
-                let songData = { requestedBy: userId, youtubeId: null, audioUrl: null };
+                let songData = { requestedBy: userId };
 
                 if (file) {
                     if (file.size > 25 * 1024 * 1024) {
@@ -193,25 +199,38 @@
 
                     statusMsg.innerText = "⏫ Caricamento file in corso...";
                     const result = await requestUpload(file);
-                    songData.type = "mp3";
+                    // backend returns { source: "file", audioUrl, title, artist }
+                    songData.type = "file";
                     songData.audioUrl = result.audioUrl;
                     songData.title = result.title;
                     songData.artist = result.artist;
 
                 } else if (link) {
-                    statusMsg.innerText = "⏬ Elaborazione link in corso...";
+                    // If user pasted a raw YouTube link, prefer letting backend detect it.
+                    statusMsg.innerText = "⏬ Elaborazione link...";
                     const result = await requestDownload(link);
 
-                    if (result.source === "youtube") {
-                        songData.type = "youtube";
-                        songData.youtubeId = result.youtubeId;
-                    } else {
-                        songData.type = "mp3";
-                        songData.audioUrl = result.audioUrl;
-                    }
-                    songData.title = result.title;
-                    songData.artist = result.artist;
+                    if (!result || !result.source) throw new Error("Risposta backend non valida.");
 
+                    if (result.source === "youtube") {
+                        // backend returned { source: "youtube", youtubeId, title, artist, startedAt }
+                        const vid = result.youtubeId;
+                        if (!vid) throw new Error("Backend non ha restituito youtubeId.");
+                        songData.type = "youtube";
+                        // store youtube id in audio_url as 'yt:VIDEOID' so server/db flow remains compatible
+                        songData.audioUrl = `yt:${vid}`;
+                        songData.title = result.title || `YouTube ${vid}`;
+                        songData.artist = result.artist || "YouTube";
+                    } else if (result.source === "file") {
+                        // file fallback (other sites)
+                        songData.type = "file";
+                        songData.audioUrl = result.audioUrl;
+                        songData.title = result.title;
+                        songData.artist = result.artist;
+                    } else {
+                        // unknown source
+                        throw new Error("Fonte non riconosciuta dal backend.");
+                    }
                 } else {
                     statusMsg.style.color = "#ef4444";
                     statusMsg.innerText = "⚠️ Inserisci un link o un file!";
@@ -219,12 +238,12 @@
                     return;
                 }
 
+                // Insert into Supabase queue: note audio_url will contain 'yt:VIDEOID' OR direct audio URL
                 const { error: insertError } = await sb.from("queue").insert({
                     type: songData.type,
                     title: songData.title,
                     artist: songData.artist,
                     audio_url: songData.audioUrl,
-                    youtube_id: songData.youtubeId,
                     requested_by: songData.requestedBy,
                 });
                 if (insertError) throw new Error(insertError.message);
@@ -243,7 +262,7 @@
             }
         }
 
-        // --- CODA: caricamento iniziale + realtime ---
+        // --- CODA: caricamento iniziale + realtime (modificato renderQueue per mostrare YT) ---
         function renderQueue(items) {
             const queueListEl = document.getElementById("queue-list");
             if (!items || items.length === 0) {
@@ -252,11 +271,15 @@
             }
             queueListEl.innerHTML = items
                 .map((item, index) => {
-                    const tag = item.type === "youtube" ? " ▶️" : "";
-                    return `<li class="queue-item">#${index + 1} ${item.title} - ${item.artist}${tag}</li>`;
+                    const isYouTube = item.audio_url && item.audio_url.startsWith && item.audio_url.startsWith('yt:');
+                    const displayTitle = item.title || (isYouTube ? (`YouTube ${item.audio_url ? item.audio_url.slice(3) : ''}`) : 'Traccia');
+                    const badge = isYouTube ? '🎬' : '🎵';
+                    return `<li class="queue-item">#${index + 1} ${badge} ${escapeHtml(displayTitle)} - ${escapeHtml(item.artist || '')}</li>`;
                 })
                 .join("");
         }
+
+        function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
         async function loadQueue() {
             const { data, error } = await sb
@@ -283,12 +306,14 @@
             advanceQueue();
         });
 
+        // renderCurrent now supports both 'file' and youtube (audio_url 'yt:ID')
         function renderCurrent(data) {
             if (!data) {
+                // stop everything
+                try { if (window.ChinoFMYouTube) window.ChinoFMYouTube.stop(); } catch(e){}
                 audioPlayer.pause();
                 audioPlayer.removeAttribute('src');
                 audioPlayer.style.display = "none";
-                if (window.ChinoFMYouTube) ChinoFMYouTube.stop();
                 mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
@@ -300,30 +325,48 @@
             document.getElementById('song-artist').innerText = data.artist;
             document.getElementById('requested-by').innerText = data.requested_by;
 
-            const startTimeMs = data.start_time ? new Date(data.start_time).getTime() : Date.now();
-            const startOffset = Math.floor(Math.max(0, (Date.now() - startTimeMs) / 1000));
+            const audioUrl = data.audio_url || '';
+            const isYouTube = audioUrl.startsWith && audioUrl.startsWith('yt:');
 
-            if (data.type === "youtube") {
-                // Video YouTube nascosto: si sente solo l'audio, la cover resta quella della radio.
-                audioPlayer.pause();
-                audioPlayer.style.display = "none";
-                mediaContainer.innerHTML = `
-                    <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
-                    <div class="yt-badge">▶️ In riproduzione da YouTube</div>
-                `;
-                if (window.ChinoFMYouTube) ChinoFMYouTube.play(data.youtube_id, startTimeMs);
+            // compute start offset based on start_time
+            let startOffset = 0;
+            if (data.start_time) {
+                startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
+            }
+
+            // reset UI
+            audioPlayer.style.display = "none";
+            mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
+
+            if (isYouTube) {
+                // hide native audio player, use hidden YouTube player
+                const vid = audioUrl.slice(3);
+                try {
+                    // play via global YouTube player module; it expects startedAt in ms
+                    if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.play === 'function') {
+                        window.ChinoFMYouTube.play(vid, new Date(data.start_time).getTime());
+                    } else {
+                        console.warn("YouTube player non pronto, chiameremo play quando pronto.");
+                        // ChinoFMYouTube will handle pendingTrack if not ready
+                        if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.init === 'function') window.ChinoFMYouTube.init();
+                        // store pending via global function (the module has pending handling)
+                        if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.play === 'function') {
+                            window.ChinoFMYouTube.play(vid, new Date(data.start_time).getTime());
+                        }
+                    }
+                } catch(e) {
+                    console.warn("Errore avviando YouTube player:", e);
+                }
             } else {
-                if (window.ChinoFMYouTube) ChinoFMYouTube.stop();
-                mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
+                // file: show audio tag and play from offset
                 audioPlayer.style.display = "block";
-
-                if (audioPlayer.src !== data.audio_url) {
-                    audioPlayer.src = data.audio_url;
+                if (audioPlayer.src !== audioUrl) {
+                    audioPlayer.src = audioUrl;
                 }
                 if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
-                    audioPlayer.currentTime = startOffset;
+                    try { audioPlayer.currentTime = startOffset; } catch(e){}
                 }
-                audioPlayer.play().catch(() => {});
+                audioPlayer.play().catch(()=>{});
             }
         }
 
@@ -344,7 +387,7 @@
 
         loadCurrent();
 
-        // --- AVANZAMENTO CODA ---
+        // --- AVANZAMENTO CODA (unchanged logic) ---
         async function forceCheckQueue() {
             const { data } = await sb
                 .from("radio_state")
@@ -371,11 +414,9 @@
             const next = nextSongs[0];
             await sb.from("radio_state").upsert({
                 id: "current",
-                type: next.type,
                 title: next.title,
                 artist: next.artist,
                 audio_url: next.audio_url,
-                youtube_id: next.youtube_id,
                 requested_by: next.requested_by,
                 start_time: new Date().toISOString(),
             });
