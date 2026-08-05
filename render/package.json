@@ -3,19 +3,21 @@
   "version": "1.0.0",
   "description": "Backend per ch1noFM",
   "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "npm install && mkdir -p yt-dlp-plugins && curl -L -o plugin.zip https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip && unzip -o plugin.zip -d yt-dlp-plugins && rm plugin.zip",
+    "build": "npm install && mkdir -p yt-dlp-plugins && (curl -fL -o plugin.zip https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip && unzip -o plugin.zip -d yt-dlp-plugins && rm plugin.zip || echo 'Plugin bgutil opzionale non scaricato, si continua senza. Il download YouTube funzionera comunque tramite cookies.txt.')",
     "start": "node index.js"
   },
   "dependencies": {
-    "@distube/ytdl-core": "^4.14.4",
     "axios": "^1.7.0",
     "cors": "^2.8.5",
     "express": "^4.19.0",
+    "ffmpeg-static": "^5.2.0",
     "form-data": "^4.0.0",
     "multer": "^1.4.5-lts.1",
     "puppeteer": "^22.0.0",
-    "yt-dlp-exec": "latest",
-    "ffmpeg-static": "^5.2.0"
+    "yt-dlp-exec": "^1.0.0"
   }
 }
