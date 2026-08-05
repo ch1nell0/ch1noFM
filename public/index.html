@@ -3,89 +3,262 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JulyFM - Web Radio</title>
+    <title>ch1noFM — Web Radio</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- Supabase SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
-        body { background-color: #0d0e12; color: #f1f5f9; display: flex; justify-content: center; padding: 20px; min-height: 100vh; }
-        .main-container { width: 100%; max-width: 580px; display: flex; flex-direction: column; gap: 20px; }
-        .player-card, .queue-card, .request-card { background: #16181e; border: 1px solid #272a34; border-radius: 16px; padding: 24px; }
-        .player-card { text-align: center; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
-        .radio-badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(239, 68, 68, 0.15); color: #ef4444; padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; margin-bottom: 16px; }
-        .radio-badge .dot { width: 8px; height: 8px; background-color: #ef4444; border-radius: 50%; }
-        .album-cover { width: 180px; height: 180px; border-radius: 12px; object-fit: cover; margin: 0 auto 16px; border: 2px solid #272a34; }
-        .song-title { font-size: 1.3rem; font-weight: 700; color: #ffffff; margin-bottom: 4px; word-break: break-word; }
-        .song-artist { font-size: 0.95rem; color: #94a3b8; margin-bottom: 12px; }
-        .requested-by { font-size: 0.85rem; color: #64748b; background: #1e212b; padding: 6px 14px; border-radius: 8px; display: inline-block; margin-bottom: 16px; }
-        audio { width: 100%; margin-bottom: 16px; filter: invert(0.9) hue-rotate(180deg); }
-        iframe { width: 100%; height: 210px; border-radius: 12px; border: none; margin-bottom: 16px; }
-        .skip-btn { background: #ef4444; color: white; border: none; padding: 12px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
-        .queue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
-        .queue-item { background: #1e212b; padding: 10px 14px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+        :root {
+            --bg: #0a0c10;
+            --bg-panel: #12151b;
+            --bg-panel-2: #181c24;
+            --bg-inset: #0e1116;
+            --border: #242a35;
+            --border-soft: #1b202a;
+            --text: #ece8df;
+            --text-dim: #9096a3;
+            --text-faint: #565c6a;
+            --accent: #ff8a3d;
+            --accent-soft: rgba(255, 138, 61, 0.14);
+            --accent-2: #f2c14e;
+            --danger: #e05a52;
+            --ok: #52c78f;
+            --radius-lg: 18px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+            --font-display: 'Fraunces', Georgia, serif;
+            --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background:
+                radial-gradient(1100px 500px at 50% -10%, rgba(255, 138, 61, 0.09), transparent 60%),
+                var(--bg);
+            color: var(--text);
+            font-family: var(--font-mono);
+            display: flex;
+            justify-content: center;
+            padding: 28px 16px 60px;
+            min-height: 100vh;
+        }
+
+        .main-container { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
+
+        /* ---------- Broadcast header ---------- */
+        .station-header { display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px 6px; }
+        .station-name { font-family: var(--font-display); font-weight: 900; font-size: 1.7rem; letter-spacing: -0.02em; color: var(--text); }
+        .station-name span { color: var(--accent); }
+        .station-tag { font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
+
+        /* ---------- Cards ---------- */
+        .player-card, .queue-card, .request-card {
+            background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-panel-2) 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 26px;
+            position: relative;
+        }
+        .player-card { box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255,255,255,0.02); }
+
+        .card-label {
+            font-size: 0.68rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+            color: var(--text-faint); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
+        }
+        .card-label::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+
+        /* ---------- On-air lamp ---------- */
+        .on-air {
+            display: inline-flex; align-items: center; gap: 7px;
+            background: var(--accent-soft); border: 1px solid rgba(255, 138, 61, 0.35);
+            color: var(--accent); padding: 5px 13px; border-radius: 999px;
+            font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+            margin-bottom: 22px;
+        }
+        .on-air .lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: blink 1.6s ease-in-out infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+        /* ---------- Vinyl + cover ---------- */
+        .platter { display: flex; justify-content: center; margin-bottom: 20px; position: relative; }
+        .vinyl {
+            width: 176px; height: 176px; border-radius: 50%;
+            background:
+                repeating-radial-gradient(circle at center, #1a1d24 0px, #1a1d24 2px, #111318 3px, #111318 4px);
+            border: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: center;
+            animation: spin 9s linear infinite;
+            animation-play-state: paused;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.5);
+        }
+        body.is-playing .vinyl { animation-play-state: running; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .album-cover {
+            width: 82px; height: 82px; border-radius: 50%; object-fit: cover;
+            border: 3px solid var(--bg-inset); box-shadow: 0 0 0 1px var(--border-soft);
+        }
+        .platter::after {
+            content: ''; position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
+            background: var(--bg); border: 2px solid var(--accent); border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        /* iframe fallback container (kept for compatibility, hidden by default) */
+        #media-container iframe { width: 100%; height: 0; border: none; }
+
+        .song-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; color: #fff; text-align: center; margin-bottom: 4px; word-break: break-word; line-height: 1.2; }
+        .song-artist { font-size: 0.82rem; color: var(--text-dim); text-align: center; margin-bottom: 16px; letter-spacing: 0.01em; }
+
+        /* ---------- VU meter ---------- */
+        .vu-meter { display: flex; justify-content: center; align-items: flex-end; gap: 4px; height: 22px; margin-bottom: 16px; }
+        .vu-meter .bar { width: 4px; height: 20%; background: var(--accent-2); border-radius: 2px; opacity: 0.35; transition: opacity 0.3s; }
+        body.is-playing .vu-meter .bar { opacity: 1; animation: vu 1s ease-in-out infinite; }
+        .vu-meter .bar:nth-child(1) { animation-delay: -0.9s; }
+        .vu-meter .bar:nth-child(2) { animation-delay: -0.6s; }
+        .vu-meter .bar:nth-child(3) { animation-delay: -1.2s; }
+        .vu-meter .bar:nth-child(4) { animation-delay: -0.3s; }
+        .vu-meter .bar:nth-child(5) { animation-delay: -0.75s; }
+        @keyframes vu { 0%, 100% { height: 20%; } 50% { height: 100%; } }
+
+        .requested-by {
+            font-size: 0.72rem; color: var(--text-faint); background: var(--bg-inset);
+            border: 1px solid var(--border-soft); padding: 6px 14px; border-radius: var(--radius-sm);
+            display: block; width: fit-content; margin: 0 auto 20px;
+        }
+        .requested-by b { color: var(--text-dim); font-weight: 600; }
+
+        audio { width: 100%; margin-bottom: 16px; filter: invert(0.88) hue-rotate(180deg) contrast(0.9); border-radius: var(--radius-sm); }
+
+        .controls-row { display: flex; gap: 10px; }
+        .start-audio-btn, .skip-btn {
+            border: none; padding: 13px 16px; border-radius: var(--radius-sm);
+            font-family: var(--font-mono); font-weight: 700; font-size: 0.78rem;
+            letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer;
+            transition: transform 0.15s ease, filter 0.15s ease;
+        }
+        .start-audio-btn:hover, .skip-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
+        .start-audio-btn { flex: 1.4; background: var(--accent); color: #1a0e05; }
+        .start-audio-btn.is-ready { background: var(--ok); color: #06251a; }
+        .skip-btn { flex: 1; background: var(--bg-inset); color: var(--text-dim); border: 1px solid var(--border); }
+        .skip-btn:hover { color: var(--danger); border-color: var(--danger); }
+
+        /* ---------- Queue ---------- */
+        .queue-list { list-style: none; display: flex; flex-direction: column; gap: 7px; max-height: 220px; overflow-y: auto; }
+        .queue-item {
+            background: var(--bg-inset); border: 1px solid var(--border-soft);
+            padding: 10px 14px; border-radius: var(--radius-sm);
+            display: flex; align-items: center; gap: 10px; font-size: 0.82rem;
+        }
+        .queue-item .idx { color: var(--accent); font-weight: 700; min-width: 22px; }
+        .queue-item .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+        .queue-item .meta .artist { color: var(--text-faint); }
+        .queue-empty { color: var(--text-faint); font-size: 0.8rem; text-align: center; padding: 14px 0; }
+
+        /* ---------- Request form ---------- */
         .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-        label { font-size: 0.85rem; color: #94a3b8; font-weight: 600; }
-        input[type="text"], input[type="file"] { background: #1e212b; border: 1px solid #334155; color: white; padding: 10px; border-radius: 8px; font-size: 0.9rem; outline: none; }
-        .submit-btn { background: #10b981; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
-        .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        #status-msg { margin-top: 10px; font-size: 0.85rem; color: #f59e0b; text-align: center; }
-        .start-audio-btn { background: #f59e0b; color: #000; border: none; padding: 12px; border-radius: 8px; font-weight: 800; cursor: pointer; width: 100%; margin-bottom: 16px; }
+        label { font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+        input[type="text"], input[type="file"] {
+            background: var(--bg-inset); border: 1px solid var(--border); color: var(--text);
+            padding: 11px 12px; border-radius: var(--radius-sm); font-size: 0.85rem;
+            font-family: var(--font-mono); outline: none; transition: border-color 0.15s ease;
+        }
+        input[type="text"]:focus { border-color: var(--accent); }
+        input[type="file"] { font-size: 0.78rem; }
+        .or-divider { text-align: center; color: var(--text-faint); font-size: 0.72rem; margin: 4px 0 12px; text-transform: uppercase; letter-spacing: 0.1em; }
+        .submit-btn {
+            background: var(--accent); color: #1a0e05; border: none; padding: 13px;
+            border-radius: var(--radius-sm); font-family: var(--font-mono); font-weight: 700;
+            font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; width: 100%;
+            transition: filter 0.15s ease, transform 0.15s ease;
+        }
+        .submit-btn:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
+        .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        #status-msg { margin-top: 10px; font-size: 0.78rem; text-align: center; min-height: 1em; }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        @media (max-width: 420px) {
+            .player-card, .queue-card, .request-card { padding: 20px; }
+            .vinyl { width: 148px; height: 148px; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .vinyl, .on-air .lamp, .vu-meter .bar { animation: none !important; }
+        }
     </style>
 </head>
 <body>
 
     <div class="main-container">
+
+        <div class="station-header">
+            <div class="station-name">ch1no<span>FM</span></div>
+            <div class="station-tag">Radio tra amici</div>
+        </div>
+
         <div class="player-card">
-            <button class="start-audio-btn" id="enable-audio-btn">🔊 AVVIA STREAM RADIO</button>
+            <div class="on-air"><span class="lamp"></span> On air</div>
 
-            <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
-
-            <!-- Contenitore Copertina / Video YouTube -->
-            <div id="media-container">
-                <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
+            <div class="platter">
+                <div class="vinyl" id="vinyl">
+                    <img id="album-cover" class="album-cover" src="https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB" alt="Cover">
+                </div>
             </div>
+
+            <!-- Contenitore per eventuale player YouTube visibile (non usato: player nascosto in youtube-radio.js) -->
+            <div id="media-container"></div>
 
             <div id="song-title" class="song-title">In attesa di brani...</div>
             <div id="song-artist" class="song-artist">Radio online</div>
-            <div class="requested-by">Richiesta da: <b id="requested-by">---</b></div>
+
+            <div class="vu-meter" aria-hidden="true">
+                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+            </div>
+
+            <div style="text-align:center;">
+                <div class="requested-by">richiesta da <b id="requested-by">—</b></div>
+            </div>
 
             <!-- Player Audio Nativo per File MP3 -->
             <audio id="radio-player" controls autoplay style="display: none;"></audio>
 
-            <button class="skip-btn" onclick="forceSkip()">⏭️ SALTA BRANO (SKIP)</button>
+            <div class="controls-row">
+                <button class="start-audio-btn" id="enable-audio-btn">🔊 Avvia stream</button>
+                <button class="skip-btn" onclick="forceSkip()">⏭️ Skip</button>
+            </div>
         </div>
 
         <div class="queue-card">
-            <div style="margin-bottom: 10px; font-weight: 700;">📋 Coda Brani</div>
+            <div class="card-label">Coda brani</div>
             <ul id="queue-list" class="queue-list">
-                <li style="color: #64748b; font-size: 0.85rem; text-align: center;">La coda è vuota.</li>
+                <li class="queue-empty">La coda è vuota.</li>
             </ul>
         </div>
 
         <div class="request-card">
-            <div style="margin-bottom: 10px; font-weight: 700;">🎵 Richiedi una Canzone</div>
+            <div class="card-label">Richiedi un brano</div>
             <div class="form-group">
-                <label>Link YouTube o URL MP3 diretto:</label>
+                <label>Link YouTube o URL MP3 diretto</label>
                 <input type="text" id="song-link" placeholder="Incolla URL YouTube o MP3...">
             </div>
-            <div style="text-align: center; color: #64748b; font-size: 0.8rem; margin: 6px 0;">oppure</div>
+            <div class="or-divider">oppure</div>
             <div class="form-group">
-                <label>Carica File Audio da PC (MP3, WAV):</label>
+                <label>Carica file audio da PC (MP3, WAV)</label>
                 <input type="file" id="file-input" accept="audio/*">
             </div>
-            <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in Coda</button>
+            <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in coda</button>
             <div id="status-msg"></div>
         </div>
     </div>
 
-    <!-- youtube-radio.js: player YouTube nascosto (deve essere servito come /youtube-radio.js dal tuo server static public) -->
-    <script src="/youtube-radio.js"></script>
+    <!-- youtube-radio.js: player YouTube nascosto, path relativo alla cartella corrente -->
+    <script src="youtube-radio.js"></script>
 
     <script>
         // --- CONFIGURAZIONE SUPABASE ---
@@ -99,14 +272,20 @@
         // URL del backend Render (yt-dlp + upload).
         const BACKEND_URL = "https://ch1nofm.onrender.com";
 
+        // --- VU meter / vinyl reattivi allo stato di riproduzione ---
+        function setPlayingState(isPlaying) {
+            document.body.classList.toggle('is-playing', !!isPlaying);
+        }
+        window.addEventListener('chinofm:ytstate', (e) => {
+            // 1 = playing, 2 = paused, 0 = ended (YT.PlayerState)
+            setPlayingState(e.detail && e.detail.state === 1);
+        });
+
         // --- Helper: normalize/extract YouTube ID from many link forms ---
         function getYouTubeIdFromAny(url) {
           if (!url || typeof url !== 'string') return null;
-          // clean spaces
           const s = url.trim();
-          // direct id
           if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
-          // patterns
           const m = s.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
           return m ? m[1] : null;
         }
@@ -114,20 +293,17 @@
         // enable audio: tries to unlock both native audio element and YouTube hidden player
         document.getElementById('enable-audio-btn').addEventListener('click', () => {
             const player = document.getElementById('radio-player');
-            player.play().catch(() => {});
-            // unlock YouTube hidden player if available
+            player.play().then(() => setPlayingState(true)).catch(() => {});
             try {
                 if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.unlock === 'function') {
                     window.ChinoFMYouTube.unlock();
                 }
             } catch (e) {}
             const btn = document.getElementById("enable-audio-btn");
-            btn.innerText = "✅ AUDIO PRONTO";
-            btn.style.background = "#10b981";
-            btn.style.color = "#fff";
+            btn.innerText = "✅ Audio pronto";
+            btn.classList.add('is-ready');
         });
 
-        // Helper: fetchJson like before
         async function fetchJson(url, options) {
             let res;
             try {
@@ -174,7 +350,6 @@
             });
         }
 
-        // --- submit handler: supporta MP3 upload OR YouTube link (backend returns source) ---
         async function handleFormSubmit() {
             const statusMsg = document.getElementById("status-msg");
             const submitBtn = document.getElementById("submit-btn");
@@ -183,7 +358,7 @@
             const file = fileInput.files[0];
 
             submitBtn.disabled = true;
-            statusMsg.style.color = "#f59e0b";
+            statusMsg.style.color = "#f2c14e";
             statusMsg.innerText = "⏳ Inserimento in corso...";
 
             try {
@@ -191,7 +366,7 @@
 
                 if (file) {
                     if (file.size > 25 * 1024 * 1024) {
-                        statusMsg.style.color = "#ef4444";
+                        statusMsg.style.color = "#e05a52";
                         statusMsg.innerText = "⚠️ Il file supera i 25 MB!";
                         submitBtn.disabled = false;
                         return;
@@ -199,46 +374,39 @@
 
                     statusMsg.innerText = "⏫ Caricamento file in corso...";
                     const result = await requestUpload(file);
-                    // backend returns { source: "file", audioUrl, title, artist }
                     songData.type = "file";
                     songData.audioUrl = result.audioUrl;
                     songData.title = result.title;
                     songData.artist = result.artist;
 
                 } else if (link) {
-                    // If user pasted a raw YouTube link, prefer letting backend detect it.
                     statusMsg.innerText = "⏬ Elaborazione link...";
                     const result = await requestDownload(link);
 
                     if (!result || !result.source) throw new Error("Risposta backend non valida.");
 
                     if (result.source === "youtube") {
-                        // backend returned { source: "youtube", youtubeId, title, artist, startedAt }
                         const vid = result.youtubeId;
                         if (!vid) throw new Error("Backend non ha restituito youtubeId.");
                         songData.type = "youtube";
-                        // store youtube id in audio_url as 'yt:VIDEOID' so server/db flow remains compatible
                         songData.audioUrl = `yt:${vid}`;
                         songData.title = result.title || `YouTube ${vid}`;
                         songData.artist = result.artist || "YouTube";
                     } else if (result.source === "file") {
-                        // file fallback (other sites)
                         songData.type = "file";
                         songData.audioUrl = result.audioUrl;
                         songData.title = result.title;
                         songData.artist = result.artist;
                     } else {
-                        // unknown source
                         throw new Error("Fonte non riconosciuta dal backend.");
                     }
                 } else {
-                    statusMsg.style.color = "#ef4444";
+                    statusMsg.style.color = "#e05a52";
                     statusMsg.innerText = "⚠️ Inserisci un link o un file!";
                     submitBtn.disabled = false;
                     return;
                 }
 
-                // Insert into Supabase queue: note audio_url will contain 'yt:VIDEOID' OR direct audio URL
                 const { error: insertError } = await sb.from("queue").insert({
                     type: songData.type,
                     title: songData.title,
@@ -248,25 +416,25 @@
                 });
                 if (insertError) throw new Error(insertError.message);
 
-                statusMsg.style.color = "#10b981";
+                statusMsg.style.color = "#52c78f";
                 statusMsg.innerText = "✅ Inserito in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
-                statusMsg.style.color = "#ef4444";
+                statusMsg.style.color = "#e05a52";
                 statusMsg.innerText = "❌ Errore: " + err.message;
             } finally {
                 submitBtn.disabled = false;
             }
         }
 
-        // --- CODA: caricamento iniziale + realtime (modificato renderQueue per mostrare YT) ---
+        // --- CODA ---
         function renderQueue(items) {
             const queueListEl = document.getElementById("queue-list");
             if (!items || items.length === 0) {
-                queueListEl.innerHTML = '<li style="color: #64748b; font-size: 0.85rem; text-align: center;">La coda è vuota.</li>';
+                queueListEl.innerHTML = '<li class="queue-empty">La coda è vuota.</li>';
                 return;
             }
             queueListEl.innerHTML = items
@@ -274,7 +442,7 @@
                     const isYouTube = item.audio_url && item.audio_url.startsWith && item.audio_url.startsWith('yt:');
                     const displayTitle = item.title || (isYouTube ? (`YouTube ${item.audio_url ? item.audio_url.slice(3) : ''}`) : 'Traccia');
                     const badge = isYouTube ? '🎬' : '🎵';
-                    return `<li class="queue-item">#${index + 1} ${badge} ${escapeHtml(displayTitle)} - ${escapeHtml(item.artist || '')}</li>`;
+                    return `<li class="queue-item"><span class="idx">${String(index + 1).padStart(2, '0')}</span><span>${badge}</span><span class="meta">${escapeHtml(displayTitle)} <span class="artist">— ${escapeHtml(item.artist || '')}</span></span></li>`;
                 })
                 .join("");
         }
@@ -297,27 +465,28 @@
 
         loadQueue();
 
-        // --- STATO RADIO (brano corrente): caricamento iniziale + realtime ---
+        // --- STATO RADIO (brano corrente) ---
         const audioPlayer = document.getElementById('radio-player');
         const mediaContainer = document.getElementById('media-container');
 
+        audioPlayer.addEventListener('play', () => setPlayingState(true));
+        audioPlayer.addEventListener('pause', () => setPlayingState(false));
         audioPlayer.addEventListener('error', () => {
             console.warn("Errore riproduzione audio, skip automatico.");
             advanceQueue();
         });
 
-        // renderCurrent now supports both 'file' and youtube (audio_url 'yt:ID')
         function renderCurrent(data) {
             if (!data) {
-                // stop everything
                 try { if (window.ChinoFMYouTube) window.ChinoFMYouTube.stop(); } catch(e){}
                 audioPlayer.pause();
                 audioPlayer.removeAttribute('src');
                 audioPlayer.style.display = "none";
-                mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
+                setPlayingState(false);
+                document.getElementById('album-cover').src = "https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB";
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
-                document.getElementById('requested-by').innerText = "---";
+                document.getElementById('requested-by').innerText = "—";
                 return;
             }
 
@@ -328,37 +497,23 @@
             const audioUrl = data.audio_url || '';
             const isYouTube = audioUrl.startsWith && audioUrl.startsWith('yt:');
 
-            // compute start offset based on start_time
             let startOffset = 0;
             if (data.start_time) {
                 startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
             }
 
-            // reset UI
             audioPlayer.style.display = "none";
-            mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
 
             if (isYouTube) {
-                // hide native audio player, use hidden YouTube player
                 const vid = audioUrl.slice(3);
                 try {
-                    // play via global YouTube player module; it expects startedAt in ms
                     if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.play === 'function') {
                         window.ChinoFMYouTube.play(vid, new Date(data.start_time).getTime());
-                    } else {
-                        console.warn("YouTube player non pronto, chiameremo play quando pronto.");
-                        // ChinoFMYouTube will handle pendingTrack if not ready
-                        if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.init === 'function') window.ChinoFMYouTube.init();
-                        // store pending via global function (the module has pending handling)
-                        if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.play === 'function') {
-                            window.ChinoFMYouTube.play(vid, new Date(data.start_time).getTime());
-                        }
                     }
                 } catch(e) {
                     console.warn("Errore avviando YouTube player:", e);
                 }
             } else {
-                // file: show audio tag and play from offset
                 audioPlayer.style.display = "block";
                 if (audioPlayer.src !== audioUrl) {
                     audioPlayer.src = audioUrl;
@@ -366,7 +521,7 @@
                 if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
                     try { audioPlayer.currentTime = startOffset; } catch(e){}
                 }
-                audioPlayer.play().catch(()=>{});
+                audioPlayer.play().then(() => setPlayingState(true)).catch(()=>{});
             }
         }
 
@@ -387,7 +542,7 @@
 
         loadCurrent();
 
-        // --- AVANZAMENTO CODA (unchanged logic) ---
+        // --- AVANZAMENTO CODA ---
         async function forceCheckQueue() {
             const { data } = await sb
                 .from("radio_state")
