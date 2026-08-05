@@ -21,6 +21,7 @@ const upload = multer({
 
 // --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
 app.get("/health", (req, res) => res.status(200).send("OK"));
+app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
 
 // --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
@@ -66,9 +67,11 @@ async function uploadAudio(fileBuffer, fileName) {
   try {
     return await uploadToLitterbox(fileBuffer, fileName);
   } catch (e1) {
+    console.warn("[Litterbox fallito]:", e1.message);
     try {
       return await uploadToCatbox(fileBuffer, fileName);
     } catch (e2) {
+      console.warn("[Catbox fallito]:", e2.message);
       return await uploadToPixeldrain(fileBuffer, fileName);
     }
   }
@@ -140,143 +143,86 @@ function getYouTubeId(url) {
   return match ? match[1] : null;
 }
 
-// --- ENGINE DOWNLOAD YOUTUBE (yt-dlp+POT come primo tentativo, poi fallback REST) ---
+// --- ENGINE DOWNLOAD YOUTUBE ---
+//
+// IMPORTANTE: dal 2024/2025 YouTube ha reso molto più aggressivo il blocco
+// delle richieste server-side (serve un "PO token"), e i vecchi trucchi
+// (mirror API non ufficiali tipo y2mate/vkrdown, istanze pubbliche di Cobalt
+// come co.wuk.sh) sono stati rimossi perché ORA SONO ROTTI O INAFFIDABILI:
+// - co.wuk.sh (Cobalt) non riesce più a scaricare da YouTube (problema noto
+//   e ancora aperto lato Cobalt).
+// - y2mate.is / vkrdown sono scraper non ufficiali che YouTube blocca con
+//   captcha o che cambiano endpoint senza preavviso.
+//
+// L'unico metodo davvero affidabile oggi è yt-dlp autenticato con i cookie
+// di un vero account YouTube (loggato, non serve premium). Vedi il file
+// README-cookies.md per la procedura in 2 minuti.
 async function downloadYouTubeAudio(youtubeUrl) {
   const videoId = getYouTubeId(youtubeUrl);
-  if (!videoId) throw new Error("ID Video YouTube non valido.");
+  if (!videoId) throw new Error("URL YouTube non valido (impossibile estrarre il video ID).");
 
   console.log(`[YouTube Engine] Download per ID: ${videoId}`);
 
-  // METODO 0: yt-dlp diretto + plugin bgutil (PO token) - il più affidabile quando disponibile
   const outputFile = path.join(os.tmpdir(), `yt_${videoId}_${Date.now()}.mp3`);
+
+  const baseArgs = {
+    noWarnings: true,
+    noPlaylist: true,
+  };
+
+  // Cookie di un account YouTube loggato (fortemente consigliato).
+  // Su Render: Settings -> Secret Files -> crea /etc/secrets/cookies.txt
+  // e imposta la env var YTDLP_COOKIES_PATH=/etc/secrets/cookies.txt
+  const cookiesPath = process.env.YTDLP_COOKIES_PATH;
+  if (cookiesPath && fs.existsSync(cookiesPath)) {
+    baseArgs.cookies = cookiesPath;
+  } else {
+    console.warn(
+      "[YouTube Engine] Nessun cookies.txt configurato (YTDLP_COOKIES_PATH). " +
+      "Molti video falliranno per il blocco anti-bot di YouTube."
+    );
+  }
+
+  // Plugin PO-token (opzionale): funziona SOLO se hai anche deployato e
+  // stai facendo girare un servizio separato bgutil-pot-provider e
+  // BGUTIL_POT_URL punta al suo indirizzo pubblico. Se non è configurato,
+  // viene semplicemente ignorato invece di rompere tutto.
+  if (process.env.BGUTIL_POT_URL) {
+    baseArgs.pluginDirs = "./yt-dlp-plugins";
+    baseArgs.extractorArgs = `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`;
+  }
+
   try {
-    console.log("[YouTube Engine] Tentativo 0: yt-dlp + bgutil POT...");
-
-    const commonArgs = {
-      pluginDirs: "./yt-dlp-plugins",
-      extractorArgs: `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`,
-    };
-
-    const info = await ytDlp(youtubeUrl, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noPlaylist: true,
-      ...commonArgs,
-    });
+    const info = await ytDlp(youtubeUrl, { ...baseArgs, dumpSingleJson: true });
 
     await ytDlp(youtubeUrl, {
+      ...baseArgs,
       extractAudio: true,
       audioFormat: "mp3",
       output: outputFile,
       ffmpegLocation: ffmpegPath,
-      noPlaylist: true,
       format: "bestaudio/best",
-      ...commonArgs,
     });
 
     const buffer = fs.readFileSync(outputFile);
     fs.unlinkSync(outputFile);
 
     return { buffer, title: info.title || "YouTube Track" };
-  } catch (e0) {
-    console.warn(`[yt-dlp + bgutil Fallito]: ${e0.message}`);
+  } catch (err) {
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+    const detail = err.stderr || err.message || String(err);
+    console.error("[YouTube Engine] yt-dlp fallito:", detail);
+
+    const hint = cookiesPath
+      ? ""
+      : " Configura YTDLP_COOKIES_PATH con un cookies.txt di un account YouTube loggato: senza, YouTube blocca quasi tutte le richieste dai server.";
+    throw new Error("Download YouTube fallito." + hint + " Dettaglio: " + detail.slice(0, 300));
   }
-
-  // METODO 1: Mirror API Open Source
-  try {
-    console.log("[YouTube Engine] Tentativo 1: API Direct Stream...");
-    const res = await axios.get(`https://api.vkrdown.com/api/yt?url=${encodeURIComponent(youtubeUrl)}`, {
-      timeout: 15000,
-    });
-
-    if (res.data && res.data.data && res.data.data.download) {
-      const audioObj = res.data.data.download.find(d => d.format === "mp3" || d.type === "audio") || res.data.data.download[0];
-      if (audioObj && audioObj.url) {
-        const audioRes = await axios.get(audioObj.url, { responseType: "arraybuffer", timeout: 30000 });
-        return {
-          buffer: Buffer.from(audioRes.data),
-          title: res.data.data.title || "YouTube Track",
-        };
-      }
-    }
-  } catch (e1) {
-    console.warn(`[API Direct Stream Fallita]: ${e1.message}`);
-  }
-
-  // METODO 2: Y2Mate Converter Gateway
-  try {
-    console.log("[YouTube Engine] Tentativo 2: Gateway Y2Mate...");
-    const initRes = await axios.post(
-      "https://www.y2mate.is/api/ajax/search",
-      new URLSearchParams({ query: youtubeUrl }),
-      {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        timeout: 15000
-      }
-    );
-
-    if (initRes.data && initRes.data.links && initRes.data.links.mp3) {
-      const firstMp3Key = Object.keys(initRes.data.links.mp3)[0];
-      const k = initRes.data.links.mp3[firstMp3Key].k;
-
-      const convertRes = await axios.post(
-        "https://www.y2mate.is/api/ajax/convert",
-        new URLSearchParams({ k: k, vid: videoId }),
-        {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          timeout: 20000
-        }
-      );
-
-      if (convertRes.data && convertRes.data.dlink) {
-        const audioRes = await axios.get(convertRes.data.dlink, { responseType: "arraybuffer", timeout: 30000 });
-        return {
-          buffer: Buffer.from(audioRes.data),
-          title: initRes.data.title || "YouTube Track"
-        };
-      }
-    }
-  } catch (e2) {
-    console.warn(`[Gateway Y2Mate Fallito]: ${e2.message}`);
-  }
-
-  // METODO 3: Cobalt API Public Instance Proxy
-  try {
-    console.log("[YouTube Engine] Tentativo 3: Cobalt Open Proxy...");
-    const res = await axios.post(
-      "https://co.wuk.sh/api/json",
-      {
-        url: youtubeUrl,
-        isAudioOnly: true,
-        aFormat: "mp3"
-      },
-      {
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
-        },
-        timeout: 15000
-      }
-    );
-
-    if (res.data && res.data.url) {
-      const audioRes = await axios.get(res.data.url, { responseType: "arraybuffer", timeout: 30000 });
-      return {
-        buffer: Buffer.from(audioRes.data),
-        title: "YouTube Track"
-      };
-    }
-  } catch (e3) {
-    console.warn(`[Cobalt Proxy Fallito]: ${e3.message}`);
-  }
-
-  throw new Error("Tutti i metodi di download YouTube sono momentaneamente falliti o irraggiungibili.");
 }
 
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
 app.post("/download", async (req, res) => {
-  const { url: link } = req.body;
+  const { url: link } = req.body || {};
   if (!link) return res.status(400).json({ error: "URL mancante." });
 
   const cleanLink = link.trim();
@@ -316,12 +262,12 @@ app.post("/download", async (req, res) => {
     } catch (err) {
       console.error("[Errore Finale YouTube]:", err.message);
       return res.status(500).json({
-        error: "Download YouTube fallito: " + err.message,
+        error: err.message,
       });
     }
   }
 
-  // CASO 3: ALTRI SITI (SoundCloud, Vimeo, TikTok, ecc.)
+  // CASO 3: ALTRI SITI (SoundCloud, Bandcamp, Vimeo, TikTok, ecc.)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
     const info = await ytDlp(cleanLink, {
