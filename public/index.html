@@ -86,7 +86,6 @@
 
     <script>
         // --- CONFIGURAZIONE SUPABASE ---
-        // Prendi questi due valori da: Dashboard Supabase -> Project Settings -> API
         const SUPABASE_URL = "https://vpkpyepszskgustruoyl.supabase.co";
         const SUPABASE_ANON_KEY = "sb_publishable__C7yHVyoeO0EAEOKOnSnLw_ebv3Zpp2";
         const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -105,19 +104,47 @@
             document.getElementById("enable-audio-btn").style.color = "#fff";
         }
 
+        // Helper: fa il fetch e prova a leggere JSON, ma se il backend risponde
+        // con qualcosa che non è JSON (es. Render "sta ancora deployando" /
+        // 502 Bad Gateway / servizio sospeso) da' un errore leggibile invece
+        // di far esplodere res.json() con "Unexpected token '<'".
+        async function fetchJson(url, options) {
+            let res;
+            try {
+                res = await fetch(url, options);
+            } catch (networkErr) {
+                throw new Error(
+                    "Impossibile contattare il backend (" + BACKEND_URL + "). " +
+                    "Potrebbe essere ancora in fase di avvio (Render free tier): riprova tra 30-60 secondi."
+                );
+            }
+
+            const raw = await res.text();
+            let data;
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch (parseErr) {
+                console.error("Risposta non-JSON dal backend:", raw.slice(0, 300));
+                throw new Error(
+                    "Il backend ha risposto in modo inatteso (probabilmente sta ancora avviandosi o è andato in errore su Render). " +
+                    "Controlla i log su Render."
+                );
+            }
+
+            if (!res.ok) {
+                throw new Error(data.error || `Errore backend (HTTP ${res.status})`);
+            }
+            return data;
+        }
+
         // Chiede al backend esterno (yt-dlp) di scaricare l'audio dal link e restituisce
         // un URL temporaneo (gratuito, via Litterbox/catbox.moe) al file mp3.
         async function requestDownload(link) {
-            const res = await fetch(`${BACKEND_URL}/download`, {
+            return fetchJson(`${BACKEND_URL}/download`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ url: link })
             });
-            const data = await res.json();
-            if (!res.ok) {
-                throw new Error(data.error || "Download fallito.");
-            }
-            return data; // { audioUrl, title, artist }
         }
 
         // Invia il file locale al backend, che lo carica su Litterbox (gratuito)
@@ -126,15 +153,10 @@
             const formData = new FormData();
             formData.append("file", file);
 
-            const res = await fetch(`${BACKEND_URL}/upload`, {
+            return fetchJson(`${BACKEND_URL}/upload`, {
                 method: "POST",
                 body: formData
             });
-            const data = await res.json();
-            if (!res.ok) {
-                throw new Error(data.error || "Upload fallito.");
-            }
-            return data; // { audioUrl, title, artist }
         }
 
         async function handleFormSubmit() {
