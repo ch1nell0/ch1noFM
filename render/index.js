@@ -7,14 +7,13 @@ const FormData = require("form-data");
 const ytDlp = require("yt-dlp-exec");
 const ffmpegPath = require("ffmpeg-static");
 const puppeteer = require("puppeteer");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
 const app = express();
 
-// SERVE FILE STATICI dalla cartella "public" (assumi project-root/public)
-// Se public è dentro render/, sostituisci path.join(__dirname, '..', 'public') con path.join(__dirname, 'public')
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.use(cors());
@@ -27,8 +26,6 @@ const upload = multer({
 
 // --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
 app.get("/health", (req, res) => res.status(200).send("OK"));
-// Nota: se vuoi che l'index.html static venga servito come root, NON sovrascrivere questa route.
-// Se preferisci che il file statico index.html sia servito su '/', rimuovi la route sotto.
 app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
 
 // --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
@@ -169,6 +166,73 @@ async function getYouTubeMeta(videoId, originalUrl) {
   }
 }
 
+// --- FALLBACK: YTMDL (usato quando yt-dlp fallisce sui siti generici) ---
+// Richiede: Python 3 + `pip install ytmdl` disponibili nell'ambiente Render
+// (aggiungi un build step, es. `pip install ytmdl` nel build command).
+// ytmdl si appoggia a ffmpeg per la conversione: gli passiamo la cartella
+// di ffmpeg-static nel PATH cosi lo trova anche se non e' installato a livello di sistema.
+function runYtmdl(url, songNameHint, outDir, fileBaseName) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-q",                 // non chiedere conferme, prendi il primo risultato
+      "-o", outDir,         // cartella di output
+      "--filename", fileBaseName,
+      "--url", url,         // link diretto da scaricare (bypassa la ricerca per l'audio)
+      songNameHint || url,  // usato solo per i metadati/tag
+    ];
+
+    const child = spawn("ytmdl", args, {
+      env: {
+        ...process.env,
+        PATH: `${path.dirname(ffmpegPath)}${path.delimiter}${process.env.PATH || ""}`,
+      },
+    });
+
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("ytmdl: timeout (60s) superato."));
+    }, 60000);
+
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(new Error("ytmdl non disponibile sul server: " + err.message));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        return reject(new Error(`ytmdl fallito (exit ${code}): ${stderr.slice(-400)}`));
+      }
+      resolve();
+    });
+  });
+}
+
+async function downloadWithYtmdlFallback(link) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ytmdl-"));
+  const fileBase = `track_${Date.now()}`;
+  try {
+    await runYtmdl(link, null, tmpDir, fileBase);
+
+    const files = fs.readdirSync(tmpDir).filter((f) => f.toLowerCase().endsWith(".mp3"));
+    if (files.length === 0) throw new Error("ytmdl non ha prodotto alcun file mp3.");
+
+    const filePath = path.join(tmpDir, files[0]);
+    const buffer = fs.readFileSync(filePath);
+    const audioUrl = await uploadAudio(buffer, `${Date.now()}_ytmdl.mp3`);
+
+    return {
+      source: "file",
+      audioUrl,
+      title: files[0].replace(/\.mp3$/i, ""),
+      artist: "Web Radio",
+    };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
 app.post("/download", async (req, res) => {
   const { url: link } = req.body || {};
@@ -216,40 +280,54 @@ app.post("/download", async (req, res) => {
     });
   }
 
-  // CASO 3: ALTRI SITI (fallback con yt-dlp)
+  // CASO 3: ALTRI SITI (yt-dlp, con fallback su ytmdl se fallisce)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
-    const info = await ytDlp(cleanLink, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noPlaylist: true,
-      format: "bestaudio/best",
-      defaultSearch: "ytsearch1:",
-    });
-    const videoInfo = info.entries ? info.entries[0] : info;
+    let videoInfo;
+    try {
+      const info = await ytDlp(cleanLink, {
+        dumpSingleJson: true,
+        noWarnings: true,
+        noPlaylist: true,
+        format: "bestaudio/best",
+        defaultSearch: "ytsearch1:",
+      });
+      videoInfo = info.entries ? info.entries[0] : info;
 
-    await ytDlp(cleanLink, {
-      extractAudio: true,
-      audioFormat: "mp3",
-      output: outputFile,
-      ffmpegLocation: ffmpegPath,
-      noPlaylist: true,
-      format: "bestaudio/best",
-      defaultSearch: "ytsearch1:",
-    });
+      await ytDlp(cleanLink, {
+        extractAudio: true,
+        audioFormat: "mp3",
+        output: outputFile,
+        ffmpegLocation: ffmpegPath,
+        noPlaylist: true,
+        format: "bestaudio/best",
+        defaultSearch: "ytsearch1:",
+      });
 
-    const audioBuffer = fs.readFileSync(outputFile);
-    const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
+      const audioBuffer = fs.readFileSync(outputFile);
+      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
 
-    return res.json({
-      source: "file",
-      audioUrl,
-      title: videoInfo.title || "Traccia sconosciuta",
-      artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
-    });
+      return res.json({
+        source: "file",
+        audioUrl,
+        title: videoInfo.title || "Traccia sconosciuta",
+        artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
+      });
+    } catch (ytDlpErr) {
+      console.warn("[yt-dlp fallito, provo ytmdl]:", ytDlpErr.message);
+      try {
+        const fallbackResult = await downloadWithYtmdlFallback(cleanLink);
+        return res.json(fallbackResult);
+      } catch (ytmdlErr) {
+        console.error("[Anche ytmdl fallito]:", ytmdlErr.message);
+        throw new Error(
+          `yt-dlp: ${ytDlpErr.stderr || ytDlpErr.message} | ytmdl: ${ytmdlErr.message}`
+        );
+      }
+    }
   } catch (err) {
-    console.error("[Errore yt-dlp Generico]:", err.message);
-    return res.status(500).json({ error: "Download fallito: " + (err.stderr || err.message) });
+    console.error("[Errore download Generico]:", err.message);
+    return res.status(500).json({ error: "Download fallito: " + err.message });
   } finally {
     if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
   }
