@@ -19,26 +19,6 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-// Optional plugin dir env (where you might mount custom yt-dlp plugins).
-const YTDLP_PLUGIN_DIR = process.env.YTDLP_PLUGIN_DIR || "./yt-dlp-plugins";
-
-// Invidious instances list (keep this updated; add/remove entries as you test).
-// These are examples — replace/extend with instances you trust.
-// Public instances can be unstable; include several to increase chance of success.
-const INVIDIOUS_INSTANCES = [
-  "https://yewtu.cafe",
-  "https://yewtu.eu",
-  "https://yewtu.snopyta.org",
-  "https://yewtu.eu.org",
-  "https://yewtu.herokuapp.com" // example; may be down — maintain your own list
-];
-
-// Show useful startup info
-console.log("Starting backend...");
-console.log("BGUTIL_POT_URL =", process.env.BGUTIL_POT_URL || "<not set>");
-console.log("YTDLP_COOKIES_PATH =", process.env.YTDLP_COOKIES_PATH || "<not set>");
-console.log("YTDLP_PLUGIN_DIR =", YTDLP_PLUGIN_DIR);
-
 // --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
 app.get("/health", (req, res) => res.status(200).send("OK"));
 app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
@@ -163,161 +143,26 @@ function getYouTubeId(url) {
   return match ? match[1] : null;
 }
 
-/**
- * Try to obtain audio by querying public Invidious instances' API.
- * Returns { buffer, title, artist } on success or throws on failure.
- */
-async function downloadFromInvidious(videoId) {
-  if (!videoId) throw new Error("videoId mancante per Invidious.");
-
-  for (const inst of INVIDIOUS_INSTANCES) {
-    try {
-      const apiUrl = `${inst.replace(/\/$/, "")}/api/v1/videos/${videoId}`;
-      const r = await axios.get(apiUrl, { timeout: 7000 });
-      const data = r.data;
-
-      if (!data) {
-        console.warn(`[Invidious] ${inst} ha risposto senza dati`);
-        continue;
-      }
-
-      // 1) adaptiveFormats / formats (common)
-      const formats = data.adaptiveFormats || data.formats || [];
-      if (Array.isArray(formats) && formats.length > 0) {
-        const audioFmt = formats.find((f) => (f.mimeType || "").includes("audio"));
-        if (audioFmt && (audioFmt.url || audioFmt.cipher || audioFmt.signatureCipher)) {
-          // Prefer direct url if present
-          let audioUrl = audioFmt.url;
-          // If cipher/signatureCipher present, skip (we don't implement decipher here)
-          if (!audioUrl) {
-            console.warn(`[Invidious] ${inst} returned ciphered audio for ${videoId}, skipping instance`);
-          } else {
-            console.log(`[Invidious] ${inst} provided direct audio URL for ${videoId}`);
-            const buf = await axios.get(audioUrl, { responseType: "arraybuffer", timeout: 20000 }).then(s => s.data);
-            return { buffer: Buffer.from(buf), title: data.title || "YouTube (Invidious)", artist: data.author || data.uploader || "Invidious" };
-          }
-        }
-      }
-
-      // 2) audioStreams (some invidious implementations)
-      if (Array.isArray(data.audioStreams) && data.audioStreams.length > 0) {
-        const s = data.audioStreams[0];
-        if (s && s.url) {
-          console.log(`[Invidious] ${inst} audioStreams url for ${videoId}`);
-          const buf = await axios.get(s.url, { responseType: "arraybuffer", timeout: 20000 }).then(s => s.data);
-          return { buffer: Buffer.from(buf), title: data.title || "YouTube (Invidious)", artist: data.author || "Invidious" };
-        }
-      }
-
-      // 3) streamingData (some instances include streamingData with adaptiveFormats)
-      if (data.streamingData && Array.isArray(data.streamingData.adaptiveFormats)) {
-        const af = data.streamingData.adaptiveFormats.find((f) => (f.mimeType || "").includes("audio"));
-        if (af && af.url) {
-          console.log(`[Invidious] ${inst} streamingData audio for ${videoId}`);
-          const buf = await axios.get(af.url, { responseType: "arraybuffer", timeout: 20000 }).then(s => s.data);
-          return { buffer: Buffer.from(buf), title: data.title || "YouTube (Invidious)", artist: data.author || "Invidious" };
-        }
-      }
-
-      // 4) direct fields fallback
-      if (data.url) {
-        try {
-          const buf = await axios.get(data.url, { responseType: "arraybuffer", timeout: 20000 }).then(s => s.data);
-          return { buffer: Buffer.from(buf), title: data.title || "YouTube (Invidious)", artist: data.author || "Invidious" };
-        } catch (e) {
-          console.warn(`[Invidious] ${inst} direct url failed: ${e.message}`);
-        }
-      }
-
-      console.warn(`[Invidious] ${inst} non ha fornito audio diretto per ${videoId}`);
-    } catch (err) {
-      console.warn(`[Invidious] istanza ${inst} fallita per ${videoId}:`, err.message);
-      continue;
-    }
-  }
-
-  throw new Error("Nessuna istanza Invidious ha fornito URL audio.");
-}
-
-/**
- * Helper to build base args for yt-dlp calls.
- * Includes cookie handling, PO-token provider config (BGUTIL_POT_URL), plugin dir.
- */
-function buildYtDlpBaseArgs() {
-  const baseArgs = {
-    noWarnings: true,
-    noPlaylist: true,
-  };
-
-  // Cookie handling: copy secret file (read-only on Render) into /tmp so yt-dlp can update it.
-  const cookiesSourcePath = process.env.YTDLP_COOKIES_PATH;
-  if (cookiesSourcePath && fs.existsSync(cookiesSourcePath)) {
-    const cookiesPath = path.join(os.tmpdir(), `cookies_${Date.now()}.txt`);
-    try {
-      fs.copyFileSync(cookiesSourcePath, cookiesPath);
-      baseArgs.cookies = cookiesPath;
-    } catch (e) {
-      console.warn("[YouTube Engine] Impossibile copiare cookies:", e.message);
-    }
-  } else {
-    console.warn(
-      "[YouTube Engine] Nessun cookies.txt configurato (YTDLP_COOKIES_PATH). " +
-      "Molti video falliranno per il blocco anti-bot di YouTube."
-    );
-  }
-
-  // If a BGUTIL POT provider is configured, pass extractor args and plugin dir.
-  if (process.env.BGUTIL_POT_URL) {
-    baseArgs.pluginDirs = YTDLP_PLUGIN_DIR;
-    baseArgs.extractorArgs = `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`;
-  }
-
-  // Allow ffmpeg location override
-  if (ffmpegPath) baseArgs.ffmpegLocation = ffmpegPath;
-
-  return baseArgs;
-}
-
-// --- ENGINE DOWNLOAD YOUTUBE ---
-async function downloadYouTubeAudio(youtubeUrl) {
-  const videoId = getYouTubeId(youtubeUrl);
-  if (!videoId) throw new Error("URL YouTube non valido (impossibile estrarre il video ID).");
-
-  console.log(`[YouTube Engine] Download per ID: ${videoId}`);
-
-  const outputFile = path.join(os.tmpdir(), `yt_${videoId}_${Date.now()}.mp3`);
-
-  const baseArgs = buildYtDlpBaseArgs();
+// --- METADATI YOUTUBE VIA OEMBED (endpoint pubblico ufficiale, no scraping) ---
+//
+// Non scarichiamo più l'audio da YouTube: usiamo l'IFrame Player ufficiale
+// lato client (vedi public/youtube-radio.js) e qui ci limitiamo a recuperare
+// titolo/autore tramite l'endpoint oEmbed pubblico di YouTube, pensato apposta
+// per essere consultato da siti terzi che incorporano i video.
+async function getYouTubeMeta(videoId, originalUrl) {
+  const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
+    `https://www.youtube.com/watch?v=${videoId}`
+  )}&format=json`;
 
   try {
-    const info = await ytDlp(youtubeUrl, { ...baseArgs, dumpSingleJson: true });
-
-    await ytDlp(youtubeUrl, {
-      ...baseArgs,
-      extractAudio: true,
-      audioFormat: "mp3",
-      output: outputFile,
-      format: "bestaudio/best",
-    });
-
-    const buffer = fs.readFileSync(outputFile);
-    fs.unlinkSync(outputFile);
-
-    return { buffer, title: info.title || "YouTube Track" };
+    const res = await axios.get(oembedUrl, { timeout: 8000 });
+    return {
+      title: res.data.title || "YouTube Track",
+      artist: res.data.author_name || "YouTube",
+    };
   } catch (err) {
-    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-    const detail = err.stderr || err.message || String(err);
-    console.error("[YouTube Engine] yt-dlp fallito:", detail);
-
-    const hint = process.env.BGUTIL_POT_URL
-      ? " Verifica che il provider PO-token risponda correttamente e che yt-dlp sia aggiornato."
-      : " Configura YTDLP_COOKIES_PATH con un cookies.txt di un account YouTube loggato: senza, YouTube blocca quasi tutte le richieste dai server.";
-    throw new Error("Download YouTube fallito." + hint + " Dettaglio: " + (detail ? detail.slice(0, 300) : String(err)));
-  } finally {
-    // cleanup any temp cookies file if yt-dlp created one
-    if (baseArgs && baseArgs.cookies && fs.existsSync(baseArgs.cookies)) {
-      try { fs.unlinkSync(baseArgs.cookies); } catch (e) { /* ignore */ }
-    }
+    console.warn("[YouTube oEmbed] fallito, uso fallback generico:", err.message);
+    return { title: "YouTube Track", artist: "YouTube" };
   }
 }
 
@@ -335,6 +180,7 @@ app.post("/download", async (req, res) => {
       const audioUrl = await uploadAudio(buffer, `${Date.now()}_typetype.m4a`);
 
       return res.json({
+        source: "file",
         audioUrl,
         title: title || "Traccia TypeType",
         artist: "TypeType Video",
@@ -345,78 +191,48 @@ app.post("/download", async (req, res) => {
     }
   }
 
-  // CASO 2: YOUTUBE
+  // CASO 2: YOUTUBE -> niente download, solo ID + metadati.
+  // La riproduzione avviene via IFrame Player ufficiale lato client, nascosto
+  // visivamente ma audibile, sincronizzato tra tutti gli utenti.
   if (
     cleanLink.includes("youtube.com") ||
     cleanLink.includes("youtu.be") ||
     cleanLink.includes("music.youtube.com")
   ) {
-    try {
-      const videoId = getYouTubeId(cleanLink);
-
-      // 1) Try TypeType mirror if it likely maps (minimal attempt)
-      try {
-        if (videoId) {
-          const mirrorUrl = `https://watch.typetype.video/watch?v=${videoId}`;
-          // If the mirror exists, downloadFromTypeType will succeed; otherwise it will throw quickly.
-          const maybe = await downloadFromTypeType(mirrorUrl).catch(() => null);
-          if (maybe && maybe.buffer) {
-            const audioUrl = await uploadAudio(maybe.buffer, `${Date.now()}_typetype_mirror.m4a`);
-            return res.json({ audioUrl, title: maybe.title || "TypeType Mirror", artist: "TypeType" });
-          }
-        }
-      } catch (e) {
-        console.warn("TypeType mirror attempt failed:", e.message);
-      }
-
-      // 2) Try Invidious instances to fetch direct audio url
-      try {
-        if (videoId) {
-          const inv = await downloadFromInvidious(videoId);
-          if (inv && inv.buffer) {
-            const audioUrl = await uploadAudio(inv.buffer, `${Date.now()}_invidious.mp3`);
-            return res.json({ audioUrl, title: inv.title, artist: inv.artist });
-          }
-        }
-      } catch (e) {
-        console.warn("Invidious fallback failed:", e.message);
-      }
-
-      // 3) Fallback to yt-dlp (with BGUTIL_POT_URL support if configured)
-      const { buffer, title } = await downloadYouTubeAudio(cleanLink);
-      const audioUrl = await uploadAudio(buffer, `${Date.now()}_youtube.mp3`);
-
-      return res.json({
-        audioUrl,
-        title: title,
-        artist: "YouTube",
-      });
-    } catch (err) {
-      console.error("[Errore Finale YouTube]:", err.message);
-      return res.status(500).json({
-        error: err.message,
-      });
+    const videoId = getYouTubeId(cleanLink);
+    if (!videoId) {
+      return res.status(400).json({ error: "URL YouTube non valido (impossibile estrarre il video ID)." });
     }
+
+    const meta = await getYouTubeMeta(videoId, cleanLink);
+
+    return res.json({
+      source: "youtube",
+      youtubeId: videoId,
+      title: meta.title,
+      artist: meta.artist,
+      // il client calcola l'offset di sync usando questo timestamp
+      startedAt: Date.now(),
+    });
   }
 
   // CASO 3: ALTRI SITI (SoundCloud, Bandcamp, Vimeo, TikTok, ecc.)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
-    const baseArgs = buildYtDlpBaseArgs();
-
     const info = await ytDlp(cleanLink, {
-      ...baseArgs,
       dumpSingleJson: true,
+      noWarnings: true,
+      noPlaylist: true,
       format: "bestaudio/best",
       defaultSearch: "ytsearch1:",
     });
     const videoInfo = info.entries ? info.entries[0] : info;
 
     await ytDlp(cleanLink, {
-      ...baseArgs,
       extractAudio: true,
       audioFormat: "mp3",
       output: outputFile,
+      ffmpegLocation: ffmpegPath,
       noPlaylist: true,
       format: "bestaudio/best",
       defaultSearch: "ytsearch1:",
@@ -426,6 +242,7 @@ app.post("/download", async (req, res) => {
     const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
 
     return res.json({
+      source: "file",
       audioUrl,
       title: videoInfo.title || "Traccia sconosciuta",
       artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
@@ -447,6 +264,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const audioUrl = await uploadAudio(req.file.buffer, safeName);
 
     res.json({
+      source: "file",
       audioUrl,
       title: req.file.originalname.replace(/\.[^/.]+$/, ""),
       artist: "Upload Locale",
