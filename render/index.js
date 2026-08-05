@@ -173,8 +173,18 @@ async function downloadYouTubeAudio(youtubeUrl) {
   // Cookie di un account YouTube loggato (fortemente consigliato).
   // Su Render: Settings -> Secret Files -> crea /etc/secrets/cookies.txt
   // e imposta la env var YTDLP_COOKIES_PATH=/etc/secrets/cookies.txt
-  const cookiesPath = process.env.YTDLP_COOKIES_PATH;
-  if (cookiesPath && fs.existsSync(cookiesPath)) {
+  //
+  // IMPORTANTE: i Secret Files di Render sono montati READ-ONLY, ma yt-dlp
+  // quando riceve --cookies non si limita a leggere il file: ci riscrive
+  // sopra i cookie aggiornati a fine esecuzione. Su un file read-only questo
+  // manda in crash yt-dlp con "OSError: Read-only file system". Per questo
+  // copiamo il file in una posizione scrivibile in /tmp ad ogni richiesta,
+  // e passiamo a yt-dlp quella copia.
+  const cookiesSourcePath = process.env.YTDLP_COOKIES_PATH;
+  let cookiesPath = null;
+  if (cookiesSourcePath && fs.existsSync(cookiesSourcePath)) {
+    cookiesPath = path.join(os.tmpdir(), `cookies_${Date.now()}.txt`);
+    fs.copyFileSync(cookiesSourcePath, cookiesPath);
     baseArgs.cookies = cookiesPath;
   } else {
     console.warn(
@@ -214,9 +224,11 @@ async function downloadYouTubeAudio(youtubeUrl) {
     console.error("[YouTube Engine] yt-dlp fallito:", detail);
 
     const hint = cookiesPath
-      ? ""
+      ? " YouTube potrebbe comunque bloccare le richieste dall'IP del server anche con i cookie (blocco anti-bot su IP datacenter): se il problema persiste, prova a esportare cookies.txt più di recente da una sessione YouTube attiva."
       : " Configura YTDLP_COOKIES_PATH con un cookies.txt di un account YouTube loggato: senza, YouTube blocca quasi tutte le richieste dai server.";
     throw new Error("Download YouTube fallito." + hint + " Dettaglio: " + detail.slice(0, 300));
+  } finally {
+    if (cookiesPath && fs.existsSync(cookiesPath)) fs.unlinkSync(cookiesPath);
   }
 }
 
