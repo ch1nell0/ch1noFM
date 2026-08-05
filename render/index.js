@@ -233,6 +233,184 @@ async function downloadWithYtmdlFallback(link) {
   }
 }
 
+// --- ENRICHMENT: copertina album + info artista, con fallback a catena ---
+// Nessuna delle fonti sotto richiede una API key (tranne Last.fm, opzionale
+// se imposti la env var LASTFM_API_KEY su Render).
+const enrichCache = new Map(); // key: "title|artist" -> { data, ts }
+const ENRICH_CACHE_TTL = 1000 * 60 * 60 * 6; // 6 ore
+const MB_USER_AGENT = "ch1noFM/1.0 (webradio tra amici)";
+
+function cacheGet(key) {
+  const hit = enrichCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > ENRICH_CACHE_TTL) { enrichCache.delete(key); return null; }
+  return hit.data;
+}
+function cacheSet(key, data) {
+  enrichCache.set(key, { data, ts: Date.now() });
+  if (enrichCache.size > 500) {
+    const oldestKey = enrichCache.keys().next().value;
+    enrichCache.delete(oldestKey);
+  }
+}
+
+// --- Copertina: iTunes -> Deezer -> MusicBrainz/CoverArtArchive ---
+async function coverFromItunes(title, artist) {
+  const term = `${artist} ${title}`.trim();
+  const { data } = await axios.get("https://itunes.apple.com/search", {
+    params: { term, entity: "song", limit: 1 },
+    timeout: 6000,
+  });
+  const hit = data.results && data.results[0];
+  if (!hit || !hit.artworkUrl100) return null;
+  return hit.artworkUrl100.replace("100x100bb", "600x600bb");
+}
+
+async function coverFromDeezer(title, artist) {
+  const q = `${artist} ${title}`.trim();
+  const { data } = await axios.get("https://api.deezer.com/search", {
+    params: { q },
+    timeout: 6000,
+  });
+  const hit = data.data && data.data[0];
+  const cover = hit && hit.album && (hit.album.cover_xl || hit.album.cover_big || hit.album.cover_medium);
+  return cover || null;
+}
+
+async function coverFromMusicBrainz(title, artist) {
+  const query = `recording:"${title}" AND artist:"${artist}"`;
+  const { data } = await axios.get("https://musicbrainz.org/ws/2/recording/", {
+    params: { query, fmt: "json", limit: 1 },
+    headers: { "User-Agent": MB_USER_AGENT },
+    timeout: 7000,
+  });
+  const rec = data.recordings && data.recordings[0];
+  const releaseId = rec && rec.releases && rec.releases[0] && rec.releases[0].id;
+  if (!releaseId) return null;
+
+  try {
+    const artUrl = `https://coverartarchive.org/release/${releaseId}/front-500`;
+    // Verifica che esista davvero prima di restituirla (HEAD per evitare di scaricare tutto).
+    await axios.head(artUrl, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
+    return artUrl;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function findCoverArt(title, artist) {
+  const sources = [coverFromItunes, coverFromDeezer, coverFromMusicBrainz];
+  for (const source of sources) {
+    try {
+      const url = await source(title, artist);
+      if (url) return url;
+    } catch (e) {
+      console.warn(`[cover:${source.name}] fallito:`, e.message);
+    }
+  }
+  return null;
+}
+
+// --- Artista: Wikipedia (bio + foto) -> Deezer (foto) -> Last.fm opzionale ---
+async function artistFromWikipedia(artist, lang) {
+  const url = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(artist)}`;
+  const { data } = await axios.get(url, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
+  if (!data || data.type === "disambiguation") return null;
+  return {
+    bio: data.extract || null,
+    photo: (data.thumbnail && data.thumbnail.source) || (data.originalimage && data.originalimage.source) || null,
+    name: data.title || artist,
+  };
+}
+
+async function artistFromDeezer(artist) {
+  const { data } = await axios.get("https://api.deezer.com/search/artist", {
+    params: { q: artist },
+    timeout: 6000,
+  });
+  const hit = data.data && data.data[0];
+  if (!hit) return null;
+  return { bio: null, photo: hit.picture_xl || hit.picture_big || hit.picture_medium || null, name: hit.name };
+}
+
+async function artistFromLastfm(artist) {
+  const apiKey = process.env.LASTFM_API_KEY;
+  if (!apiKey) return null;
+  const { data } = await axios.get("https://ws.audioscrobbler.com/2.0/", {
+    params: { method: "artist.getinfo", artist, api_key: apiKey, format: "json" },
+    timeout: 6000,
+  });
+  if (!data || !data.artist) return null;
+  const bioRaw = data.artist.bio && data.artist.bio.summary;
+  const bio = bioRaw ? bioRaw.replace(/<a[^>]*>.*?<\/a>/g, "").trim() : null;
+  return { bio, photo: null, name: data.artist.name || artist };
+}
+
+async function findArtistInfo(artist) {
+  if (!artist) return { bio: null, photo: null, name: null };
+
+  let result = { bio: null, photo: null, name: artist };
+
+  // Bio: Last.fm (se disponibile) -> Wikipedia IT -> Wikipedia EN
+  const bioSources = [
+    () => artistFromLastfm(artist),
+    () => artistFromWikipedia(artist, "it"),
+    () => artistFromWikipedia(artist, "en"),
+  ];
+  for (const source of bioSources) {
+    try {
+      const info = await source();
+      if (info && info.bio) { result.bio = info.bio; result.name = info.name || result.name; }
+      if (info && info.photo && !result.photo) result.photo = info.photo;
+      if (result.bio && result.photo) break;
+    } catch (e) {
+      console.warn("[artistBio] fallito:", e.message);
+    }
+  }
+
+  // Foto: se ancora mancante, prova Deezer
+  if (!result.photo) {
+    try {
+      const info = await artistFromDeezer(artist);
+      if (info && info.photo) result.photo = info.photo;
+    } catch (e) {
+      console.warn("[artistPhoto:deezer] fallito:", e.message);
+    }
+  }
+
+  return result;
+}
+
+app.get("/enrich", async (req, res) => {
+  const title = (req.query.title || "").toString().trim();
+  const artist = (req.query.artist || "").toString().trim();
+  if (!title && !artist) return res.status(400).json({ error: "title o artist mancanti." });
+
+  const cacheKey = `${title}|${artist}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    const [cover, artistInfo] = await Promise.all([
+      findCoverArt(title, artist).catch(() => null),
+      findArtistInfo(artist).catch(() => ({ bio: null, photo: null, name: artist })),
+    ]);
+
+    const result = {
+      cover: cover || null,
+      artistName: artistInfo.name || artist || null,
+      artistBio: artistInfo.bio || null,
+      artistPhoto: artistInfo.photo || null,
+    };
+
+    cacheSet(cacheKey, result);
+    res.json(result);
+  } catch (err) {
+    console.error("[Errore /enrich]:", err.message);
+    res.status(500).json({ error: "Enrichment fallito: " + err.message });
+  }
+});
+
 // --- ROUTE PRINCIPALE /DOWNLOAD ---
 app.post("/download", async (req, res) => {
   const { url: link } = req.body || {};
