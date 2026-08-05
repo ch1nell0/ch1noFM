@@ -1,3 +1,4 @@
+// name=render/index.js
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -11,6 +12,11 @@ const path = require("path");
 const os = require("os");
 
 const app = express();
+
+// SERVE FILE STATICI dalla cartella "public" (assumi project-root/public)
+// Se public è dentro render/, sostituisci path.join(__dirname, '..', 'public') con path.join(__dirname, 'public')
+app.use(express.static(path.join(__dirname, "..", "public")));
+
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
@@ -21,6 +27,8 @@ const upload = multer({
 
 // --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
 app.get("/health", (req, res) => res.status(200).send("OK"));
+// Nota: se vuoi che l'index.html static venga servito come root, NON sovrascrivere questa route.
+// Se preferisci che il file statico index.html sia servito su '/', rimuovi la route sotto.
 app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
 
 // --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
@@ -144,11 +152,6 @@ function getYouTubeId(url) {
 }
 
 // --- METADATI YOUTUBE VIA OEMBED (endpoint pubblico ufficiale, no scraping) ---
-//
-// Non scarichiamo più l'audio da YouTube: usiamo l'IFrame Player ufficiale
-// lato client (vedi public/youtube-radio.js) e qui ci limitiamo a recuperare
-// titolo/autore tramite l'endpoint oEmbed pubblico di YouTube, pensato apposta
-// per essere consultato da siti terzi che incorporano i video.
 async function getYouTubeMeta(videoId, originalUrl) {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
     `https://www.youtube.com/watch?v=${videoId}`
@@ -192,8 +195,6 @@ app.post("/download", async (req, res) => {
   }
 
   // CASO 2: YOUTUBE -> niente download, solo ID + metadati.
-  // La riproduzione avviene via IFrame Player ufficiale lato client, nascosto
-  // visivamente ma audibile, sincronizzato tra tutti gli utenti.
   if (
     cleanLink.includes("youtube.com") ||
     cleanLink.includes("youtu.be") ||
@@ -211,12 +212,11 @@ app.post("/download", async (req, res) => {
       youtubeId: videoId,
       title: meta.title,
       artist: meta.artist,
-      // il client calcola l'offset di sync usando questo timestamp
       startedAt: Date.now(),
     });
   }
 
-  // CASO 3: ALTRI SITI (SoundCloud, Bandcamp, Vimeo, TikTok, ecc.)
+  // CASO 3: ALTRI SITI (fallback con yt-dlp)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
     const info = await ytDlp(cleanLink, {
