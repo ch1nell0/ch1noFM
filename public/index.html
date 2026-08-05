@@ -12,6 +12,9 @@
     <!-- Supabase SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
+    <!-- Player YouTube nascosto (solo audio) + sync -->
+    <script src="youtube-radio.js"></script>
+
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
         body { background-color: #0d0e12; color: #f1f5f9; display: flex; justify-content: center; padding: 20px; min-height: 100vh; }
@@ -25,7 +28,7 @@
         .song-artist { font-size: 0.95rem; color: #94a3b8; margin-bottom: 12px; }
         .requested-by { font-size: 0.85rem; color: #64748b; background: #1e212b; padding: 6px 14px; border-radius: 8px; display: inline-block; margin-bottom: 16px; }
         audio { width: 100%; margin-bottom: 16px; filter: invert(0.9) hue-rotate(180deg); }
-        iframe { width: 100%; height: 210px; border-radius: 12px; border: none; margin-bottom: 16px; }
+        .yt-badge { display: inline-block; font-size: 0.75rem; color: #f59e0b; background: rgba(245, 158, 11, 0.12); padding: 3px 10px; border-radius: 6px; margin-bottom: 12px; }
         .skip-btn { background: #ef4444; color: white; border: none; padding: 12px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; }
         .queue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
         .queue-item { background: #1e212b; padding: 10px 14px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
@@ -46,7 +49,7 @@
 
             <div class="radio-badge"><div class="dot"></div> LIVE RADIO</div>
 
-            <!-- Contenitore Copertina / Video YouTube -->
+            <!-- Contenitore Copertina (il video YouTube vero resta nascosto altrove) -->
             <div id="media-container">
                 <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
             </div>
@@ -103,6 +106,7 @@
         function enableAudio() {
             const player = document.getElementById('radio-player');
             player.play().catch(() => {});
+            if (window.ChinoFMYouTube) ChinoFMYouTube.unlock();
             document.getElementById("enable-audio-btn").innerText = "✅ AUDIO PRONTO";
             document.getElementById("enable-audio-btn").style.background = "#10b981";
             document.getElementById("enable-audio-btn").style.color = "#fff";
@@ -141,8 +145,10 @@
             return data;
         }
 
-        // Chiede al backend esterno (yt-dlp) di scaricare l'audio dal link e restituisce
-        // un URL temporaneo (gratuito, via Litterbox/catbox.moe) al file mp3.
+        // Chiede al backend esterno di elaborare il link. Per YouTube restituisce
+        // solo { source: "youtube", youtubeId, title, artist }. Per tutto il resto
+        // (mp3 diretti, SoundCloud, Bandcamp, TypeType...) restituisce
+        // { source: "file", audioUrl, title, artist }.
         async function requestDownload(link) {
             return fetchJson(`${BACKEND_URL}/download`, {
                 method: "POST",
@@ -175,7 +181,7 @@
             statusMsg.innerText = "⏳ Inserimento in corso...";
 
             try {
-                let songData = { requestedBy: userId };
+                let songData = { requestedBy: userId, youtubeId: null, audioUrl: null };
 
                 if (file) {
                     if (file.size > 25 * 1024 * 1024) {
@@ -193,10 +199,16 @@
                     songData.artist = result.artist;
 
                 } else if (link) {
-                    statusMsg.innerText = "⏬ Download in corso (può richiedere fino a 1 minuto)...";
+                    statusMsg.innerText = "⏬ Elaborazione link in corso...";
                     const result = await requestDownload(link);
-                    songData.type = "mp3";
-                    songData.audioUrl = result.audioUrl;
+
+                    if (result.source === "youtube") {
+                        songData.type = "youtube";
+                        songData.youtubeId = result.youtubeId;
+                    } else {
+                        songData.type = "mp3";
+                        songData.audioUrl = result.audioUrl;
+                    }
                     songData.title = result.title;
                     songData.artist = result.artist;
 
@@ -212,6 +224,7 @@
                     title: songData.title,
                     artist: songData.artist,
                     audio_url: songData.audioUrl,
+                    youtube_id: songData.youtubeId,
                     requested_by: songData.requestedBy,
                 });
                 if (insertError) throw new Error(insertError.message);
@@ -238,7 +251,10 @@
                 return;
             }
             queueListEl.innerHTML = items
-                .map((item, index) => `<li class="queue-item">#${index + 1} ${item.title} - ${item.artist}</li>`)
+                .map((item, index) => {
+                    const tag = item.type === "youtube" ? " ▶️" : "";
+                    return `<li class="queue-item">#${index + 1} ${item.title} - ${item.artist}${tag}</li>`;
+                })
                 .join("");
         }
 
@@ -272,6 +288,7 @@
                 audioPlayer.pause();
                 audioPlayer.removeAttribute('src');
                 audioPlayer.style.display = "none";
+                if (window.ChinoFMYouTube) ChinoFMYouTube.stop();
                 mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
@@ -283,21 +300,31 @@
             document.getElementById('song-artist').innerText = data.artist;
             document.getElementById('requested-by').innerText = data.requested_by;
 
-            let startOffset = 0;
-            if (data.start_time) {
-                startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
-            }
+            const startTimeMs = data.start_time ? new Date(data.start_time).getTime() : Date.now();
+            const startOffset = Math.floor(Math.max(0, (Date.now() - startTimeMs) / 1000));
 
-            mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
-            audioPlayer.style.display = "block";
+            if (data.type === "youtube") {
+                // Video YouTube nascosto: si sente solo l'audio, la cover resta quella della radio.
+                audioPlayer.pause();
+                audioPlayer.style.display = "none";
+                mediaContainer.innerHTML = `
+                    <img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">
+                    <div class="yt-badge">▶️ In riproduzione da YouTube</div>
+                `;
+                if (window.ChinoFMYouTube) ChinoFMYouTube.play(data.youtube_id, startTimeMs);
+            } else {
+                if (window.ChinoFMYouTube) ChinoFMYouTube.stop();
+                mediaContainer.innerHTML = `<img id="album-cover" class="album-cover" src="https://via.placeholder.com/180/16181e/64748b?text=JulyFM" alt="Cover">`;
+                audioPlayer.style.display = "block";
 
-            if (audioPlayer.src !== data.audio_url) {
-                audioPlayer.src = data.audio_url;
+                if (audioPlayer.src !== data.audio_url) {
+                    audioPlayer.src = data.audio_url;
+                }
+                if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
+                    audioPlayer.currentTime = startOffset;
+                }
+                audioPlayer.play().catch(() => {});
             }
-            if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
-                audioPlayer.currentTime = startOffset;
-            }
-            audioPlayer.play().catch(() => {});
         }
 
         async function loadCurrent() {
@@ -344,9 +371,11 @@
             const next = nextSongs[0];
             await sb.from("radio_state").upsert({
                 id: "current",
+                type: next.type,
                 title: next.title,
                 artist: next.artist,
                 audio_url: next.audio_url,
+                youtube_id: next.youtube_id,
                 requested_by: next.requested_by,
                 start_time: new Date().toISOString(),
             });
