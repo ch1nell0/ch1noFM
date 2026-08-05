@@ -1,56 +1,35 @@
-/**
- * youtube-radio.js
- * ------------------------------------------------------------------
- * Player YouTube nascosto (solo audio) + sync tra tutti gli utenti.
- *
- * Come funziona:
- * 1. Carica l'IFrame Player API ufficiale di YouTube.
- * 2. Crea un player YouTube reale ma visivamente nascosto (1x1px, fuori
- *    schermo). Il video "esiste" ma nessuno lo vede: si sente solo l'audio.
- * 3. Quando arriva una nuova traccia YouTube (dal tuo backend /download,
- *    caso "source: youtube"), calcola quanti secondi sono già passati da
- *    "startedAt" e fa partire il video esattamente da lì, così chi si
- *    collega dopo sente comunque la canzone in sync con gli altri.
- *
- * COSA DEVI ADATTARE (cerca i commenti "TODO"):
- * - Il punto in cui ricevi una nuova traccia dalla coda (Supabase realtime,
- *   polling, websocket... qualsiasi cosa usi già in index.html).
- * - Il punto in cui oggi fai `audioElement.src = data.audioUrl` per i file
- *   mp3: qui basta un `if` per instradare su YouTube o su file normale.
- *
- * Non serve nessuna API key: l'IFrame Player è pubblico e gratuito.
- * ------------------------------------------------------------------
- */
-
+// name=public/youtube-radio.js
 (function () {
   let ytPlayer = null;
   let ytApiReady = false;
-  let pendingTrack = null; // se arriva una traccia prima che l'API sia pronta
+  let pendingTrack = null;
 
-  // --- 1. Carica l'IFrame API di YouTube (una sola volta) ---
+  function log(...args){ console.log('[youtube-radio]', ...args); }
+  function warn(...args){ console.warn('[youtube-radio]', ...args); }
+
   function loadYouTubeIframeApi() {
     if (window.YT && window.YT.Player) {
       ytApiReady = true;
+      log('YT API already available');
       createHiddenPlayer();
       return;
     }
     const tag = document.createElement("script");
     tag.src = "https://www.youtube.com/iframe_api";
+    tag.onerror = () => warn('Errore caricamento IFrame API YouTube');
     document.head.appendChild(tag);
 
-    // YouTube chiama questa funzione globale quando l'API è pronta
     window.onYouTubeIframeAPIReady = function () {
       ytApiReady = true;
+      log('onYouTubeIframeAPIReady');
       createHiddenPlayer();
     };
   }
 
-  // --- 2. Crea il player nascosto ---
   function createHiddenPlayer() {
+    if (ytPlayer) return;
     const mount = document.createElement("div");
     mount.id = "yt-hidden-player-mount";
-    // Nascosto ma non display:none (alcuni browser mettono in pausa i
-    // media con display:none): lo spostiamo fuori dallo schermo.
     mount.style.position = "fixed";
     mount.style.left = "-9999px";
     mount.style.top = "-9999px";
@@ -59,6 +38,7 @@
     mount.style.pointerEvents = "none";
     document.body.appendChild(mount);
 
+    log('Creazione player nascosto');
     ytPlayer = new YT.Player(mount.id, {
       height: "1",
       width: "1",
@@ -72,72 +52,68 @@
       },
       events: {
         onReady: function () {
+          log('YouTube hidden player ready');
           if (pendingTrack) {
+            log('play pendingTrack on ready', pendingTrack.youtubeId);
             playYouTubeTrack(pendingTrack.youtubeId, pendingTrack.startedAt);
             pendingTrack = null;
           }
         },
+        onStateChange: function(e){
+          log('YT state', e.data);
+        },
+        onError: function(e){
+          warn('YT player error', e);
+        }
       },
     });
   }
 
-  /**
-   * Fa partire (o riprende in sync) un video YouTube.
-   * @param {string} youtubeId - ID del video (es. "dQw4w9WgXcQ")
-   * @param {number} startedAtMs - timestamp epoch (ms) di quando la traccia
-   *        è stata messa in coda dal server. Serve per calcolare l'offset.
-   */
   function playYouTubeTrack(youtubeId, startedAtMs) {
     if (!ytApiReady || !ytPlayer || typeof ytPlayer.loadVideoById !== "function") {
+      warn('YouTube player non pronto, chiameremo play quando pronto.');
       pendingTrack = { youtubeId, startedAt: startedAtMs };
       loadYouTubeIframeApi();
       return;
     }
-
     const elapsedSeconds = Math.max(0, (Date.now() - startedAtMs) / 1000);
-
-    ytPlayer.loadVideoById({
-      videoId: youtubeId,
-      startSeconds: elapsedSeconds,
-    });
-
-    // Alcuni browser bloccano l'autoplay con audio: se il player resta in
-    // pausa, mostriamo un pulsante "Attiva audio" (vedi ensureAudioUnlocked).
+    log('loadVideoById', youtubeId, 'startSeconds=', elapsedSeconds);
+    ytPlayer.loadVideoById({ videoId: youtubeId, startSeconds: elapsedSeconds });
     setTimeout(() => {
-      try {
-        ytPlayer.playVideo();
-      } catch (e) {}
+      try { ytPlayer.playVideo(); log('tentativo playVideo()'); } catch (e) { warn('playVideo error', e); }
     }, 300);
   }
 
   function stopYouTubeTrack() {
     if (ytPlayer && typeof ytPlayer.stopVideo === "function") {
       ytPlayer.stopVideo();
+      log('stopVideo called');
     }
   }
 
-  function setYouTubeVolume(percent /* 0-100 */) {
+  function setYouTubeVolume(percent) {
     if (ytPlayer && typeof ytPlayer.setVolume === "function") {
       ytPlayer.setVolume(percent);
+      log('setVolume', percent);
     }
   }
 
-  // Molti browser richiedono un'interazione utente prima di permettere
-  // l'autoplay con audio. Chiama questa funzione dentro il click del tuo
-  // pulsante "AVVIA STREAM RADIO" già presente in index.html.
   function unlockYouTubeAudio() {
     if (!ytApiReady) {
       loadYouTubeIframeApi();
+      log('unlock requested: API not ready, loading');
       return;
     }
     if (ytPlayer && typeof ytPlayer.playVideo === "function") {
       try {
         ytPlayer.playVideo();
-      } catch (e) {}
+        log('unlock attempted: playVideo() called');
+      } catch (e) {
+        warn('unlock playVideo error', e);
+      }
     }
   }
 
-  // Espone le funzioni per usarle nel resto del tuo codice (index.html)
   window.ChinoFMYouTube = {
     init: loadYouTubeIframeApi,
     play: playYouTubeTrack,
@@ -146,7 +122,5 @@
     unlock: unlockYouTubeAudio,
   };
 
-  // Inizializza subito il caricamento dell'API (il player resta in pausa
-  // finché non arriva una traccia o l'utente clicca "AVVIA STREAM RADIO").
   loadYouTubeIframeApi();
 })();
