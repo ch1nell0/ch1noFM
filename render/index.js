@@ -19,6 +19,15 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+// Optional plugin dir env (where you might mount custom yt-dlp plugins).
+const YTDLP_PLUGIN_DIR = process.env.YTDLP_PLUGIN_DIR || "./yt-dlp-plugins";
+
+// Show useful startup info
+console.log("Starting backend...");
+console.log("BGUTIL_POT_URL =", process.env.BGUTIL_POT_URL || "<not set>");
+console.log("YTDLP_COOKIES_PATH =", process.env.YTDLP_COOKIES_PATH || "<not set>");
+console.log("YTDLP_PLUGIN_DIR =", YTDLP_PLUGIN_DIR);
+
 // --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
 app.get("/health", (req, res) => res.status(200).send("OK"));
 app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
@@ -143,20 +152,46 @@ function getYouTubeId(url) {
   return match ? match[1] : null;
 }
 
+/**
+ * Helper to build base args for yt-dlp calls.
+ * Includes cookie handling, PO-token provider config (BGUTIL_POT_URL), plugin dir.
+ */
+function buildYtDlpBaseArgs() {
+  const baseArgs = {
+    noWarnings: true,
+    noPlaylist: true,
+  };
+
+  // Cookie handling: copy secret file (read-only on Render) into /tmp so yt-dlp can update it.
+  const cookiesSourcePath = process.env.YTDLP_COOKIES_PATH;
+  if (cookiesSourcePath && fs.existsSync(cookiesSourcePath)) {
+    const cookiesPath = path.join(os.tmpdir(), `cookies_${Date.now()}.txt`);
+    try {
+      fs.copyFileSync(cookiesSourcePath, cookiesPath);
+      baseArgs.cookies = cookiesPath;
+    } catch (e) {
+      console.warn("[YouTube Engine] Impossibile copiare cookies:", e.message);
+    }
+  } else {
+    console.warn(
+      "[YouTube Engine] Nessun cookies.txt configurato (YTDLP_COOKIES_PATH). " +
+      "Molti video falliranno per il blocco anti-bot di YouTube."
+    );
+  }
+
+  // If a BGUTIL POT provider is configured, pass extractor args and plugin dir.
+  if (process.env.BGUTIL_POT_URL) {
+    baseArgs.pluginDirs = YTDLP_PLUGIN_DIR;
+    baseArgs.extractorArgs = `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`;
+  }
+
+  // Allow ffmpeg location override
+  if (ffmpegPath) baseArgs.ffmpegLocation = ffmpegPath;
+
+  return baseArgs;
+}
+
 // --- ENGINE DOWNLOAD YOUTUBE ---
-//
-// IMPORTANTE: dal 2024/2025 YouTube ha reso molto più aggressivo il blocco
-// delle richieste server-side (serve un "PO token"), e i vecchi trucchi
-// (mirror API non ufficiali tipo y2mate/vkrdown, istanze pubbliche di Cobalt
-// come co.wuk.sh) sono stati rimossi perché ORA SONO ROTTI O INAFFIDABILI:
-// - co.wuk.sh (Cobalt) non riesce più a scaricare da YouTube (problema noto
-//   e ancora aperto lato Cobalt).
-// - y2mate.is / vkrdown sono scraper non ufficiali che YouTube blocca con
-//   captcha o che cambiano endpoint senza preavviso.
-//
-// L'unico metodo davvero affidabile oggi è yt-dlp autenticato con i cookie
-// di un vero account YouTube (loggato, non serve premium). Vedi il file
-// README-cookies.md per la procedura in 2 minuti.
 async function downloadYouTubeAudio(youtubeUrl) {
   const videoId = getYouTubeId(youtubeUrl);
   if (!videoId) throw new Error("URL YouTube non valido (impossibile estrarre il video ID).");
@@ -165,42 +200,7 @@ async function downloadYouTubeAudio(youtubeUrl) {
 
   const outputFile = path.join(os.tmpdir(), `yt_${videoId}_${Date.now()}.mp3`);
 
-  const baseArgs = {
-    noWarnings: true,
-    noPlaylist: true,
-  };
-
-  // Cookie di un account YouTube loggato (fortemente consigliato).
-  // Su Render: Settings -> Secret Files -> crea /etc/secrets/cookies.txt
-  // e imposta la env var YTDLP_COOKIES_PATH=/etc/secrets/cookies.txt
-  //
-  // IMPORTANTE: i Secret Files di Render sono montati READ-ONLY, ma yt-dlp
-  // quando riceve --cookies non si limita a leggere il file: ci riscrive
-  // sopra i cookie aggiornati a fine esecuzione. Su un file read-only questo
-  // manda in crash yt-dlp con "OSError: Read-only file system". Per questo
-  // copiamo il file in una posizione scrivibile in /tmp ad ogni richiesta,
-  // e passiamo a yt-dlp quella copia.
-  const cookiesSourcePath = process.env.YTDLP_COOKIES_PATH;
-  let cookiesPath = null;
-  if (cookiesSourcePath && fs.existsSync(cookiesSourcePath)) {
-    cookiesPath = path.join(os.tmpdir(), `cookies_${Date.now()}.txt`);
-    fs.copyFileSync(cookiesSourcePath, cookiesPath);
-    baseArgs.cookies = cookiesPath;
-  } else {
-    console.warn(
-      "[YouTube Engine] Nessun cookies.txt configurato (YTDLP_COOKIES_PATH). " +
-      "Molti video falliranno per il blocco anti-bot di YouTube."
-    );
-  }
-
-  // Plugin PO-token (opzionale): funziona SOLO se hai anche deployato e
-  // stai facendo girare un servizio separato bgutil-pot-provider e
-  // BGUTIL_POT_URL punta al suo indirizzo pubblico. Se non è configurato,
-  // viene semplicemente ignorato invece di rompere tutto.
-  if (process.env.BGUTIL_POT_URL) {
-    baseArgs.pluginDirs = "./yt-dlp-plugins";
-    baseArgs.extractorArgs = `youtubepot-bgutilhttp:base_url=${process.env.BGUTIL_POT_URL}`;
-  }
+  const baseArgs = buildYtDlpBaseArgs();
 
   try {
     const info = await ytDlp(youtubeUrl, { ...baseArgs, dumpSingleJson: true });
@@ -210,7 +210,6 @@ async function downloadYouTubeAudio(youtubeUrl) {
       extractAudio: true,
       audioFormat: "mp3",
       output: outputFile,
-      ffmpegLocation: ffmpegPath,
       format: "bestaudio/best",
     });
 
@@ -223,12 +222,15 @@ async function downloadYouTubeAudio(youtubeUrl) {
     const detail = err.stderr || err.message || String(err);
     console.error("[YouTube Engine] yt-dlp fallito:", detail);
 
-    const hint = cookiesPath
-      ? " YouTube potrebbe comunque bloccare le richieste dall'IP del server anche con i cookie (blocco anti-bot su IP datacenter): se il problema persiste, prova a esportare cookies.txt più di recente da una sessione YouTube attiva."
+    const hint = process.env.BGUTIL_POT_URL
+      ? " Verifica che il provider PO-token risponda correttamente e che yt-dlp sia aggiornato."
       : " Configura YTDLP_COOKIES_PATH con un cookies.txt di un account YouTube loggato: senza, YouTube blocca quasi tutte le richieste dai server.";
-    throw new Error("Download YouTube fallito." + hint + " Dettaglio: " + detail.slice(0, 300));
+    throw new Error("Download YouTube fallito." + hint + " Dettaglio: " + (detail ? detail.slice(0, 300) : String(err)));
   } finally {
-    if (cookiesPath && fs.existsSync(cookiesPath)) fs.unlinkSync(cookiesPath);
+    // cleanup any temp cookies file if yt-dlp created one
+    if (baseArgs && baseArgs.cookies && fs.existsSync(baseArgs.cookies)) {
+      try { fs.unlinkSync(baseArgs.cookies); } catch (e) { /* ignore */ }
+    }
   }
 }
 
@@ -282,20 +284,21 @@ app.post("/download", async (req, res) => {
   // CASO 3: ALTRI SITI (SoundCloud, Bandcamp, Vimeo, TikTok, ecc.)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
+    const baseArgs = buildYtDlpBaseArgs();
+
     const info = await ytDlp(cleanLink, {
+      ...baseArgs,
       dumpSingleJson: true,
-      noWarnings: true,
-      noPlaylist: true,
       format: "bestaudio/best",
       defaultSearch: "ytsearch1:",
     });
     const videoInfo = info.entries ? info.entries[0] : info;
 
     await ytDlp(cleanLink, {
+      ...baseArgs,
       extractAudio: true,
       audioFormat: "mp3",
       output: outputFile,
-      ffmpegLocation: ffmpegPath,
       noPlaylist: true,
       format: "bestaudio/best",
       defaultSearch: "ytsearch1:",
