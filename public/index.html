@@ -9,7 +9,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-    <!-- Supabase SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
     <style>
@@ -49,16 +48,67 @@
             min-height: 100vh;
         }
 
-        .main-container { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
+        .page { width: 100%; max-width: 980px; display: flex; flex-direction: column; gap: 18px; }
 
-        /* ---------- Broadcast header ---------- */
-        .station-header { display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px 6px; }
+        .station-header { display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px 2px; }
         .station-name { font-family: var(--font-display); font-weight: 900; font-size: 1.7rem; letter-spacing: -0.02em; color: var(--text); }
         .station-name span { color: var(--accent); }
         .station-tag { font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
 
+        /* ---------- Bacheca (header board) ---------- */
+        .board {
+            background: repeating-linear-gradient(180deg, var(--bg-panel) 0px, var(--bg-panel) 27px, var(--border-soft) 28px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px 18px;
+            min-height: 58px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .board-pin { font-size: 0.9rem; flex-shrink: 0; opacity: 0.8; }
+        .board-content {
+            flex: 1;
+            font-size: 0.82rem;
+            color: var(--text-dim);
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.5;
+        }
+        .board-content.is-empty { color: var(--text-faint); font-style: italic; }
+        .board-edit-btn {
+            flex-shrink: 0; background: transparent; border: 1px solid var(--border);
+            color: var(--text-faint); font-family: var(--font-mono); font-size: 0.68rem;
+            text-transform: uppercase; letter-spacing: 0.08em; padding: 6px 10px;
+            border-radius: var(--radius-sm); cursor: pointer; transition: color 0.15s, border-color 0.15s;
+        }
+        .board-edit-btn:hover { color: var(--accent); border-color: var(--accent); }
+        .board-editor { display: none; flex: 1; gap: 10px; align-items: flex-start; }
+        .board-editor.active { display: flex; }
+        .board-editor textarea {
+            flex: 1; background: var(--bg-inset); border: 1px solid var(--border); color: var(--text);
+            font-family: var(--font-mono); font-size: 0.82rem; padding: 8px 10px; border-radius: var(--radius-sm);
+            resize: vertical; min-height: 44px; outline: none;
+        }
+        .board-editor textarea:focus { border-color: var(--accent); }
+        .board-save-btn {
+            background: var(--accent); color: #1a0e05; border: none; padding: 8px 14px;
+            border-radius: var(--radius-sm); font-family: var(--font-mono); font-weight: 700;
+            font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer;
+        }
+
+        /* ---------- Layout ---------- */
+        .layout { display: grid; grid-template-columns: 1fr 300px; gap: 18px; align-items: start; }
+        .main-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+        .side-col { display: flex; flex-direction: column; gap: 18px; }
+
+        @media (max-width: 800px) {
+            .layout { grid-template-columns: 1fr; }
+            .side-col { order: -1; }
+        }
+
         /* ---------- Cards ---------- */
-        .player-card, .queue-card, .request-card {
+        .player-card, .queue-card, .request-card, .artist-card {
             background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-panel-2) 100%);
             border: 1px solid var(--border);
             border-radius: var(--radius-lg);
@@ -73,7 +123,6 @@
         }
         .card-label::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
 
-        /* ---------- On-air lamp ---------- */
         .on-air {
             display: inline-flex; align-items: center; gap: 7px;
             background: var(--accent-soft); border: 1px solid rgba(255, 138, 61, 0.35);
@@ -84,12 +133,10 @@
         .on-air .lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: blink 1.6s ease-in-out infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-        /* ---------- Vinyl + cover ---------- */
         .platter { display: flex; justify-content: center; margin-bottom: 20px; position: relative; }
         .vinyl {
             width: 176px; height: 176px; border-radius: 50%;
-            background:
-                repeating-radial-gradient(circle at center, #1a1d24 0px, #1a1d24 2px, #111318 3px, #111318 4px);
+            background: repeating-radial-gradient(circle at center, #1a1d24 0px, #1a1d24 2px, #111318 3px, #111318 4px);
             border: 1px solid var(--border);
             display: flex; align-items: center; justify-content: center;
             animation: spin 9s linear infinite;
@@ -108,22 +155,20 @@
             transform: translate(-50%, -50%);
         }
 
-        /* iframe fallback container (kept for compatibility, hidden by default) */
-        #media-container iframe { width: 100%; height: 0; border: none; }
-
         .song-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; color: #fff; text-align: center; margin-bottom: 4px; word-break: break-word; line-height: 1.2; }
-        .song-artist { font-size: 0.82rem; color: var(--text-dim); text-align: center; margin-bottom: 16px; letter-spacing: 0.01em; }
+        .song-artist { font-size: 0.82rem; color: var(--text-dim); text-align: center; margin-bottom: 18px; letter-spacing: 0.01em; }
 
-        /* ---------- VU meter ---------- */
-        .vu-meter { display: flex; justify-content: center; align-items: flex-end; gap: 4px; height: 22px; margin-bottom: 16px; }
-        .vu-meter .bar { width: 4px; height: 20%; background: var(--accent-2); border-radius: 2px; opacity: 0.35; transition: opacity 0.3s; }
-        body.is-playing .vu-meter .bar { opacity: 1; animation: vu 1s ease-in-out infinite; }
-        .vu-meter .bar:nth-child(1) { animation-delay: -0.9s; }
-        .vu-meter .bar:nth-child(2) { animation-delay: -0.6s; }
-        .vu-meter .bar:nth-child(3) { animation-delay: -1.2s; }
-        .vu-meter .bar:nth-child(4) { animation-delay: -0.3s; }
-        .vu-meter .bar:nth-child(5) { animation-delay: -0.75s; }
-        @keyframes vu { 0%, 100% { height: 20%; } 50% { height: 100%; } }
+        /* ---------- Waveform ("wave candy" style progress) ---------- */
+        .waveform { display: flex; align-items: center; gap: 1.5px; height: 40px; margin-bottom: 16px; }
+        .waveform .bar {
+            flex: 1; min-width: 2px; background: var(--border); border-radius: 2px;
+            transition: background 0.2s ease, opacity 0.2s ease;
+        }
+        .waveform .bar.played { background: var(--accent); }
+        body.is-playing .waveform .bar.played:nth-child(3n) { animation: kick 0.9s ease-in-out infinite; }
+        body.is-playing .waveform .bar.played:nth-child(3n+1) { animation: kick 0.9s ease-in-out infinite 0.15s; }
+        @keyframes kick { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+        .waveform-time { display: flex; justify-content: space-between; font-size: 0.66rem; color: var(--text-faint); margin-bottom: 18px; letter-spacing: 0.03em; }
 
         .requested-by {
             font-size: 0.72rem; color: var(--text-faint); background: var(--bg-inset);
@@ -132,7 +177,7 @@
         }
         .requested-by b { color: var(--text-dim); font-weight: 600; }
 
-        audio { width: 100%; margin-bottom: 16px; filter: invert(0.88) hue-rotate(180deg) contrast(0.9); border-radius: var(--radius-sm); }
+        audio { display: none; }
 
         .controls-row { display: flex; gap: 10px; }
         .start-audio-btn, .skip-btn {
@@ -180,84 +225,119 @@
         .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         #status-msg { margin-top: 10px; font-size: 0.78rem; text-align: center; min-height: 1em; }
 
+        /* ---------- Artist card ---------- */
+        .artist-card { display: flex; flex-direction: column; align-items: center; text-align: center; }
+        .artist-photo-wrap {
+            width: 100%; aspect-ratio: 1 / 1; border-radius: var(--radius-md); overflow: hidden;
+            background: var(--bg-inset); border: 1px solid var(--border-soft); margin-bottom: 14px;
+        }
+        .artist-photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .artist-name { font-family: var(--font-display); font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
+        .artist-bio { font-size: 0.76rem; color: var(--text-dim); line-height: 1.55; text-align: left; }
+        .artist-bio.is-empty { color: var(--text-faint); font-style: italic; text-align: center; }
+        .artist-source { font-size: 0.62rem; color: var(--text-faint); margin-top: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
         @media (max-width: 420px) {
-            .player-card, .queue-card, .request-card { padding: 20px; }
+            .player-card, .queue-card, .request-card, .artist-card { padding: 20px; }
             .vinyl { width: 148px; height: 148px; }
         }
 
         @media (prefers-reduced-motion: reduce) {
-            .vinyl, .on-air .lamp, .vu-meter .bar { animation: none !important; }
+            .vinyl, .on-air .lamp, .waveform .bar { animation: none !important; }
         }
     </style>
 </head>
 <body>
 
-    <div class="main-container">
+    <div class="page">
 
         <div class="station-header">
             <div class="station-name">ch1no<span>FM</span></div>
             <div class="station-tag">Radio tra amici</div>
         </div>
 
-        <div class="player-card">
-            <div class="on-air"><span class="lamp"></span> On air</div>
+        <div class="board">
+            <div class="board-pin">📌</div>
+            <div class="board-content is-empty" id="board-content">La bacheca è vuota.</div>
+            <div class="board-editor" id="board-editor">
+                <textarea id="board-textarea" placeholder="Scrivi qualcosa per tutti..."></textarea>
+                <button class="board-save-btn" id="board-save-btn">Salva</button>
+            </div>
+            <button class="board-edit-btn" id="board-edit-btn">✏️ Modifica</button>
+        </div>
 
-            <div class="platter">
-                <div class="vinyl" id="vinyl">
-                    <img id="album-cover" class="album-cover" src="https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB" alt="Cover">
+        <div class="layout">
+            <div class="main-col">
+
+                <div class="player-card">
+                    <div class="on-air"><span class="lamp"></span> On air</div>
+
+                    <div class="platter">
+                        <div class="vinyl" id="vinyl">
+                            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB" alt="Cover">
+                        </div>
+                    </div>
+
+                    <div id="song-title" class="song-title">In attesa di brani...</div>
+                    <div id="song-artist" class="song-artist">Radio online</div>
+
+                    <div class="waveform" id="waveform" aria-hidden="true"></div>
+                    <div class="waveform-time">
+                        <span id="time-current">0:00</span>
+                        <span id="time-total">--:--</span>
+                    </div>
+
+                    <div style="text-align:center;">
+                        <div class="requested-by">richiesta da <b id="requested-by">—</b></div>
+                    </div>
+
+                    <audio id="radio-player" autoplay></audio>
+
+                    <div class="controls-row">
+                        <button class="start-audio-btn" id="enable-audio-btn">🔊 Avvia stream</button>
+                        <button class="skip-btn" onclick="forceSkip()">⏭️ Skip</button>
+                    </div>
+                </div>
+
+                <div class="queue-card">
+                    <div class="card-label">Coda brani</div>
+                    <ul id="queue-list" class="queue-list">
+                        <li class="queue-empty">La coda è vuota.</li>
+                    </ul>
+                </div>
+
+                <div class="request-card">
+                    <div class="card-label">Richiedi un brano</div>
+                    <div class="form-group">
+                        <label>Link YouTube o URL MP3 diretto</label>
+                        <input type="text" id="song-link" placeholder="Incolla URL YouTube o MP3...">
+                    </div>
+                    <div class="or-divider">oppure</div>
+                    <div class="form-group">
+                        <label>Carica file audio da PC (MP3, WAV)</label>
+                        <input type="file" id="file-input" accept="audio/*">
+                    </div>
+                    <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in coda</button>
+                    <div id="status-msg"></div>
+                </div>
+
+            </div>
+
+            <div class="side-col">
+                <div class="artist-card">
+                    <div class="artist-photo-wrap">
+                        <img id="artist-photo" src="https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB" alt="Artista">
+                    </div>
+                    <div class="artist-name" id="artist-name">—</div>
+                    <div class="artist-bio is-empty" id="artist-bio">Nessun brano in riproduzione.</div>
                 </div>
             </div>
-
-            <!-- Contenitore per eventuale player YouTube visibile (non usato: player nascosto in youtube-radio.js) -->
-            <div id="media-container"></div>
-
-            <div id="song-title" class="song-title">In attesa di brani...</div>
-            <div id="song-artist" class="song-artist">Radio online</div>
-
-            <div class="vu-meter" aria-hidden="true">
-                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
-            </div>
-
-            <div style="text-align:center;">
-                <div class="requested-by">richiesta da <b id="requested-by">—</b></div>
-            </div>
-
-            <!-- Player Audio Nativo per File MP3 -->
-            <audio id="radio-player" controls autoplay style="display: none;"></audio>
-
-            <div class="controls-row">
-                <button class="start-audio-btn" id="enable-audio-btn">🔊 Avvia stream</button>
-                <button class="skip-btn" onclick="forceSkip()">⏭️ Skip</button>
-            </div>
-        </div>
-
-        <div class="queue-card">
-            <div class="card-label">Coda brani</div>
-            <ul id="queue-list" class="queue-list">
-                <li class="queue-empty">La coda è vuota.</li>
-            </ul>
-        </div>
-
-        <div class="request-card">
-            <div class="card-label">Richiedi un brano</div>
-            <div class="form-group">
-                <label>Link YouTube o URL MP3 diretto</label>
-                <input type="text" id="song-link" placeholder="Incolla URL YouTube o MP3...">
-            </div>
-            <div class="or-divider">oppure</div>
-            <div class="form-group">
-                <label>Carica file audio da PC (MP3, WAV)</label>
-                <input type="file" id="file-input" accept="audio/*">
-            </div>
-            <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in coda</button>
-            <div id="status-msg"></div>
         </div>
     </div>
 
-    <!-- youtube-radio.js: player YouTube nascosto, path relativo alla cartella corrente -->
     <script src="youtube-radio.js"></script>
 
     <script>
@@ -269,17 +349,162 @@
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
         localStorage.setItem("radio_uid", userId);
 
-        // URL del backend Render (yt-dlp + upload).
         const BACKEND_URL = "https://ch1nofm.onrender.com";
 
-        // --- VU meter / vinyl reattivi allo stato di riproduzione ---
+        // ================= WAVEFORM =================
+        const WAVE_BAR_COUNT = 56;
+        let waveDuration = 0;
+        let ytPollTimer = null;
+
+        function hashStr(str) {
+            let h = 0;
+            for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+            return h;
+        }
+        function seededRandom(seed) {
+            let s = seed >>> 0;
+            return function () {
+                s |= 0; s = (s + 0x6D2B79F5) | 0;
+                let t = Math.imul(s ^ (s >>> 15), 1 | s);
+                t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+        function buildWaveform(seedStr) {
+            const rand = seededRandom(hashStr(seedStr || 'ch1noFM'));
+            const el = document.getElementById('waveform');
+            el.innerHTML = '';
+            for (let i = 0; i < WAVE_BAR_COUNT; i++) {
+                const isKick = i % 4 === 0 || rand() > 0.82;
+                const h = isKick ? 45 + rand() * 55 : 12 + rand() * 30;
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.style.height = Math.round(h) + '%';
+                el.appendChild(bar);
+            }
+        }
+        function formatTime(sec) {
+            if (!isFinite(sec) || sec < 0) return '--:--';
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60);
+            return m + ':' + String(s).padStart(2, '0');
+        }
+        function updateWaveformProgress(currentTime, duration) {
+            document.getElementById('time-current').innerText = formatTime(currentTime);
+            document.getElementById('time-total').innerText = duration > 0 ? formatTime(duration) : '--:--';
+            if (!duration || duration <= 0) return;
+            const fraction = Math.min(1, Math.max(0, currentTime / duration));
+            const playedCount = Math.round(fraction * WAVE_BAR_COUNT);
+            const bars = document.getElementById('waveform').children;
+            for (let i = 0; i < bars.length; i++) {
+                bars[i].classList.toggle('played', i < playedCount);
+            }
+        }
+        function stopYtPolling() {
+            if (ytPollTimer) { clearInterval(ytPollTimer); ytPollTimer = null; }
+        }
+        function startYtPolling() {
+            stopYtPolling();
+            ytPollTimer = setInterval(() => {
+                if (!window.ChinoFMYouTube) return;
+                const ct = window.ChinoFMYouTube.getCurrentTime();
+                const dur = window.ChinoFMYouTube.getDuration();
+                if (dur > 0) updateWaveformProgress(ct, dur);
+            }, 500);
+        }
+
+        // ================= STATO RIPRODUZIONE (vinile + VU) =================
         function setPlayingState(isPlaying) {
             document.body.classList.toggle('is-playing', !!isPlaying);
         }
         window.addEventListener('chinofm:ytstate', (e) => {
-            // 1 = playing, 2 = paused, 0 = ended (YT.PlayerState)
             setPlayingState(e.detail && e.detail.state === 1);
         });
+
+        // ================= BACHECA =================
+        const boardContentEl = document.getElementById('board-content');
+        const boardEditorEl = document.getElementById('board-editor');
+        const boardTextareaEl = document.getElementById('board-textarea');
+        const boardEditBtn = document.getElementById('board-edit-btn');
+        const boardSaveBtn = document.getElementById('board-save-btn');
+
+        function renderBoard(content) {
+            if (content && content.trim()) {
+                boardContentEl.innerText = content;
+                boardContentEl.classList.remove('is-empty');
+            } else {
+                boardContentEl.innerText = 'La bacheca è vuota.';
+                boardContentEl.classList.add('is-empty');
+            }
+        }
+
+        async function loadBoard() {
+            const { data, error } = await sb.from('board').select('content').eq('id', 'main').maybeSingle();
+            if (error) { console.warn('Bacheca non disponibile (tabella "board" creata?):', error.message); return; }
+            renderBoard(data ? data.content : '');
+        }
+
+        boardEditBtn.addEventListener('click', () => {
+            boardTextareaEl.value = boardContentEl.classList.contains('is-empty') ? '' : boardContentEl.innerText;
+            boardEditorEl.classList.add('active');
+            boardContentEl.style.display = 'none';
+            boardEditBtn.style.display = 'none';
+            boardTextareaEl.focus();
+        });
+
+        boardSaveBtn.addEventListener('click', async () => {
+            const content = boardTextareaEl.value;
+            boardSaveBtn.disabled = true;
+            const { error } = await sb.from('board').upsert({ id: 'main', content, updated_at: new Date().toISOString() });
+            boardSaveBtn.disabled = false;
+            if (error) { alert('Errore salvataggio bacheca: ' + error.message); return; }
+            renderBoard(content);
+            boardEditorEl.classList.remove('active');
+            boardContentEl.style.display = '';
+            boardEditBtn.style.display = '';
+        });
+
+        sb.channel('board-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'board' }, loadBoard)
+            .subscribe();
+        loadBoard();
+
+        // ================= SCHEDA ARTISTA + COVER (via backend /enrich) =================
+        let enrichSeq = 0;
+        async function loadEnrichment(title, artist) {
+            const seq = ++enrichSeq;
+            const artistNameEl = document.getElementById('artist-name');
+            const artistBioEl = document.getElementById('artist-bio');
+            const artistPhotoEl = document.getElementById('artist-photo');
+
+            artistNameEl.innerText = artist || '—';
+            artistBioEl.innerText = 'Cerco informazioni...';
+            artistBioEl.classList.add('is-empty');
+
+            try {
+                const url = `${BACKEND_URL}/enrich?title=${encodeURIComponent(title || '')}&artist=${encodeURIComponent(artist || '')}`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (seq !== enrichSeq) return; // una richiesta più recente ha già preso il sopravvento
+
+                if (data.cover) document.getElementById('album-cover').src = data.cover;
+                artistPhotoEl.src = data.artistPhoto || 'https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB';
+                artistNameEl.innerText = data.artistName || artist || '—';
+                if (data.artistBio) {
+                    artistBioEl.innerText = data.artistBio;
+                    artistBioEl.classList.remove('is-empty');
+                } else {
+                    artistBioEl.innerText = 'Nessuna biografia trovata.';
+                    artistBioEl.classList.add('is-empty');
+                }
+            } catch (e) {
+                console.warn('Enrichment fallito:', e.message);
+                if (seq !== enrichSeq) return;
+                artistBioEl.innerText = 'Info non disponibili al momento.';
+                artistBioEl.classList.add('is-empty');
+            }
+        }
 
         // --- Helper: normalize/extract YouTube ID from many link forms ---
         function getYouTubeIdFromAny(url) {
@@ -290,7 +515,6 @@
           return m ? m[1] : null;
         }
 
-        // enable audio: tries to unlock both native audio element and YouTube hidden player
         document.getElementById('enable-audio-btn').addEventListener('click', () => {
             const player = document.getElementById('radio-player');
             player.play().then(() => setPlayingState(true)).catch(() => {});
@@ -314,21 +538,15 @@
                     "Potrebbe essere ancora in fase di avvio: riprova tra 30-60 secondi."
                 );
             }
-
             const raw = await res.text();
             let data;
             try {
                 data = raw ? JSON.parse(raw) : {};
             } catch (parseErr) {
                 console.error("Risposta non-JSON dal backend:", raw.slice(0, 300));
-                throw new Error(
-                    "Il backend ha risposto in modo inatteso (controlla i log su Render)."
-                );
+                throw new Error("Il backend ha risposto in modo inatteso (controlla i log su Render).");
             }
-
-            if (!res.ok) {
-                throw new Error(data.error || `Errore backend (HTTP ${res.status})`);
-            }
+            if (!res.ok) throw new Error(data.error || `Errore backend (HTTP ${res.status})`);
             return data;
         }
 
@@ -343,11 +561,7 @@
         async function requestUpload(file) {
             const formData = new FormData();
             formData.append("file", file);
-
-            return fetchJson(`${BACKEND_URL}/upload`, {
-                method: "POST",
-                body: formData
-            });
+            return fetchJson(`${BACKEND_URL}/upload`, { method: "POST", body: formData });
         }
 
         async function handleFormSubmit() {
@@ -371,18 +585,15 @@
                         submitBtn.disabled = false;
                         return;
                     }
-
                     statusMsg.innerText = "⏫ Caricamento file in corso...";
                     const result = await requestUpload(file);
                     songData.type = "file";
                     songData.audioUrl = result.audioUrl;
                     songData.title = result.title;
                     songData.artist = result.artist;
-
                 } else if (link) {
                     statusMsg.innerText = "⏬ Elaborazione link...";
                     const result = await requestDownload(link);
-
                     if (!result || !result.source) throw new Error("Risposta backend non valida.");
 
                     if (result.source === "youtube") {
@@ -450,49 +661,56 @@
         function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
         async function loadQueue() {
-            const { data, error } = await sb
-                .from("queue")
-                .select("*")
-                .order("created_at", { ascending: true });
+            const { data, error } = await sb.from("queue").select("*").order("created_at", { ascending: true });
             if (error) { console.error("Errore caricamento coda:", error.message); return; }
             renderQueue(data);
         }
 
-        sb
-            .channel("queue-changes")
+        sb.channel("queue-changes")
             .on("postgres_changes", { event: "*", schema: "public", table: "queue" }, loadQueue)
             .subscribe();
-
         loadQueue();
 
         // --- STATO RADIO (brano corrente) ---
         const audioPlayer = document.getElementById('radio-player');
-        const mediaContainer = document.getElementById('media-container');
 
         audioPlayer.addEventListener('play', () => setPlayingState(true));
         audioPlayer.addEventListener('pause', () => setPlayingState(false));
+        audioPlayer.addEventListener('timeupdate', () => {
+            if (audioPlayer.duration) updateWaveformProgress(audioPlayer.currentTime, audioPlayer.duration);
+        });
         audioPlayer.addEventListener('error', () => {
             console.warn("Errore riproduzione audio, skip automatico.");
             advanceQueue();
         });
 
         function renderCurrent(data) {
+            stopYtPolling();
+
             if (!data) {
                 try { if (window.ChinoFMYouTube) window.ChinoFMYouTube.stop(); } catch(e){}
                 audioPlayer.pause();
                 audioPlayer.removeAttribute('src');
-                audioPlayer.style.display = "none";
                 setPlayingState(false);
                 document.getElementById('album-cover').src = "https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB";
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
                 document.getElementById('requested-by').innerText = "—";
+                document.getElementById('artist-name').innerText = "—";
+                document.getElementById('artist-bio').innerText = "Nessun brano in riproduzione.";
+                document.getElementById('artist-bio').classList.add('is-empty');
+                document.getElementById('artist-photo').src = "https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB";
+                buildWaveform('idle');
+                updateWaveformProgress(0, 0);
                 return;
             }
 
             document.getElementById('song-title').innerText = data.title;
             document.getElementById('song-artist').innerText = data.artist;
             document.getElementById('requested-by').innerText = data.requested_by;
+
+            buildWaveform((data.title || '') + '|' + (data.artist || ''));
+            loadEnrichment(data.title, data.artist);
 
             const audioUrl = data.audio_url || '';
             const isYouTube = audioUrl.startsWith && audioUrl.startsWith('yt:');
@@ -502,22 +720,18 @@
                 startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
             }
 
-            audioPlayer.style.display = "none";
-
             if (isYouTube) {
                 const vid = audioUrl.slice(3);
                 try {
                     if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.play === 'function') {
                         window.ChinoFMYouTube.play(vid, new Date(data.start_time).getTime());
+                        startYtPolling();
                     }
                 } catch(e) {
                     console.warn("Errore avviando YouTube player:", e);
                 }
             } else {
-                audioPlayer.style.display = "block";
-                if (audioPlayer.src !== audioUrl) {
-                    audioPlayer.src = audioUrl;
-                }
+                if (audioPlayer.src !== audioUrl) audioPlayer.src = audioUrl;
                 if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
                     try { audioPlayer.currentTime = startOffset; } catch(e){}
                 }
@@ -526,39 +740,25 @@
         }
 
         async function loadCurrent() {
-            const { data, error } = await sb
-                .from("radio_state")
-                .select("*")
-                .eq("id", "current")
-                .maybeSingle();
+            const { data, error } = await sb.from("radio_state").select("*").eq("id", "current").maybeSingle();
             if (error) { console.error("Errore caricamento stato radio:", error.message); return; }
             renderCurrent(data);
         }
 
-        sb
-            .channel("state-changes")
+        sb.channel("state-changes")
             .on("postgres_changes", { event: "*", schema: "public", table: "radio_state" }, loadCurrent)
             .subscribe();
-
         loadCurrent();
 
         // --- AVANZAMENTO CODA ---
         async function forceCheckQueue() {
-            const { data } = await sb
-                .from("radio_state")
-                .select("id")
-                .eq("id", "current")
-                .maybeSingle();
+            const { data } = await sb.from("radio_state").select("id").eq("id", "current").maybeSingle();
             if (!data) advanceQueue();
         }
 
         async function advanceQueue() {
             const { data: nextSongs, error: fetchError } = await sb
-                .from("queue")
-                .select("*")
-                .order("created_at", { ascending: true })
-                .limit(1);
-
+                .from("queue").select("*").order("created_at", { ascending: true }).limit(1);
             if (fetchError) { console.error("Errore lettura coda:", fetchError.message); return; }
 
             if (!nextSongs || nextSongs.length === 0) {
@@ -579,6 +779,9 @@
         }
 
         function forceSkip() { advanceQueue(); }
+
+        // Waveform iniziale (stato "in attesa")
+        buildWaveform('idle');
     </script>
 </body>
 </html>
