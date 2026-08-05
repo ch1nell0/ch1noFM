@@ -88,7 +88,11 @@
         // --- CONFIGURAZIONE SUPABASE ---
         const SUPABASE_URL = "https://vpkpyepszskgustruoyl.supabase.co";
         const SUPABASE_ANON_KEY = "sb_publishable__C7yHVyoeO0EAEOKOnSnLw_ebv3Zpp2";
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        // NB: la variabile si chiama "sb" e non "supabase" perché la libreria
+        // espone già window.supabase come proprietà globale non configurabile:
+        // dichiarare "const supabase = ..." causa un SyntaxError che blocca
+        // il parsing dell'intero script (e quindi anche tutte le onclick).
+        const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
         localStorage.setItem("radio_uid", userId);
@@ -203,7 +207,7 @@
                     return;
                 }
 
-                const { error: insertError } = await supabase.from("queue").insert({
+                const { error: insertError } = await sb.from("queue").insert({
                     type: songData.type,
                     title: songData.title,
                     artist: songData.artist,
@@ -239,7 +243,7 @@
         }
 
         async function loadQueue() {
-            const { data, error } = await supabase
+            const { data, error } = await sb
                 .from("queue")
                 .select("*")
                 .order("created_at", { ascending: true });
@@ -247,7 +251,7 @@
             renderQueue(data);
         }
 
-        supabase
+        sb
             .channel("queue-changes")
             .on("postgres_changes", { event: "*", schema: "public", table: "queue" }, loadQueue)
             .subscribe();
@@ -297,7 +301,7 @@
         }
 
         async function loadCurrent() {
-            const { data, error } = await supabase
+            const { data, error } = await sb
                 .from("radio_state")
                 .select("*")
                 .eq("id", "current")
@@ -306,7 +310,7 @@
             renderCurrent(data);
         }
 
-        supabase
+        sb
             .channel("state-changes")
             .on("postgres_changes", { event: "*", schema: "public", table: "radio_state" }, loadCurrent)
             .subscribe();
@@ -315,7 +319,7 @@
 
         // --- AVANZAMENTO CODA ---
         async function forceCheckQueue() {
-            const { data } = await supabase
+            const { data } = await sb
                 .from("radio_state")
                 .select("id")
                 .eq("id", "current")
@@ -324,7 +328,7 @@
         }
 
         async function advanceQueue() {
-            const { data: nextSongs, error: fetchError } = await supabase
+            const { data: nextSongs, error: fetchError } = await sb
                 .from("queue")
                 .select("*")
                 .order("created_at", { ascending: true })
@@ -333,12 +337,12 @@
             if (fetchError) { console.error("Errore lettura coda:", fetchError.message); return; }
 
             if (!nextSongs || nextSongs.length === 0) {
-                await supabase.from("radio_state").delete().eq("id", "current");
+                await sb.from("radio_state").delete().eq("id", "current");
                 return;
             }
 
             const next = nextSongs[0];
-            await supabase.from("radio_state").upsert({
+            await sb.from("radio_state").upsert({
                 id: "current",
                 title: next.title,
                 artist: next.artist,
@@ -346,7 +350,7 @@
                 requested_by: next.requested_by,
                 start_time: new Date().toISOString(),
             });
-            await supabase.from("queue").delete().eq("id", next.id);
+            await sb.from("queue").delete().eq("id", next.id);
         }
 
         function forceSkip() { advanceQueue(); }
