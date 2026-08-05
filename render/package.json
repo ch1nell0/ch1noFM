@@ -7,7 +7,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "npm install && mkdir -p yt-dlp-plugins && (curl -fL -o plugin.zip https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip && unzip -o plugin.zip -d yt-dlp-plugins && rm plugin.zip || echo 'Plugin bgutil opzionale non scaricato, si continua senza. Il download YouTube funzionera comunque tramite cookies.txt.')",
+    "build": "pip install ytmdl && npm install && mkdir -p yt-dlp-plugins && (curl -fL -o plugin.zip https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip && unzip -o plugin.zip -d yt-dlp-plugins && rm plugin.zip || echo 'Plugin bgutil opzionale non scaricato, si continua senza. Il download YouTube funzionera comunque tramite cookies.txt.')",
     "start": "node index.js"
   },
   "dependencies": {
