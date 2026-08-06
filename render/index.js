@@ -11,7 +11,29 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-
+// --- SERVER PO TOKEN (bgutil) ---
+// yt-dlp da solo (anche con cookie) viene sempre più spesso respinto da YouTube con
+// "Sign in to confirm you're not a bot". La soluzione ufficiale è generare dei PO Token
+// (Proof-of-Origin) da allegare alle richieste. Il plugin Python (installato via pip nel
+// build) si registra da solo in yt-dlp; qui avviamo SOLO il server Node.js che genera
+// i token, in background, sulla porta di default 4416. Se il server non parte (es. build
+// fallita), yt-dlp continua a funzionare normalmente ma senza il PO Token.
+const BGUTIL_SERVER_ENTRY = path.join(__dirname, "bgutil-server-src", "server", "build", "main.js");
+function startBgutilServer() {
+  if (!fs.existsSync(BGUTIL_SERVER_ENTRY)) {
+    console.warn("[bgutil] server non trovato (" + BGUTIL_SERVER_ENTRY + ") - PO Token disattivati, si va avanti senza.");
+    return;
+  }
+  const child = spawn(process.execPath, [BGUTIL_SERVER_ENTRY], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (d) => console.log("[bgutil]", d.toString().trim()));
+  child.stderr.on("data", (d) => console.warn("[bgutil]", d.toString().trim()));
+  child.on("exit", (code) => {
+    console.warn(`[bgutil] server terminato inaspettatamente (code ${code}), riavvio tra 5s...`);
+    setTimeout(startBgutilServer, 5000);
+  });
+  console.log("[bgutil] server PO Token avviato in background sulla porta 4416.");
+}
+startBgutilServer();
 const app = express();
 
 // --- COOKIE YOUTUBE PER YT-DLP ---
