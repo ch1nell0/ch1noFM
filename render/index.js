@@ -15,11 +15,14 @@ const os = require("os");
 const app = express();
 
 // --- COOKIE YOUTUBE PER YT-DLP ---
-// Due modi supportati, in ordine di priorità:
-// 1) Secret File di Render chiamato "cookies.txt" -> Render lo monta automaticamente
-//    in /etc/secrets/cookies.txt, lo usiamo DIRETTAMENTE, nessuna env var richiesta.
-// 2) Env var YTDLP_COOKIES contenente il contenuto vero e proprio del cookies.txt
-//    (multi-riga, formato Netscape) — utile se non vuoi usare i Secret Files.
+// Fonti supportate, in ordine di priorità:
+// 1) Secret File di Render "cookies.txt" -> montato in /etc/secrets/cookies.txt (sola lettura)
+// 2) Env var YTDLP_COOKIES con il contenuto diretto del cookies.txt
+//
+// IMPORTANTE: qualunque sia la fonte, il contenuto viene sempre copiato in un file
+// temporaneo SCRIVIBILE prima di passarlo a yt-dlp. yt-dlp, a fine esecuzione, prova
+// a riscrivere il file dei cookie con eventuali aggiornamenti di sessione: se il path
+// punta al Secret File (read-only) questo causa un crash (OSError: Read-only file system).
 const YTDLP_COOKIES_TMP_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
 const RENDER_SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
 let cookiesResolved = false;
@@ -29,14 +32,15 @@ function getYtdlpCookiesPath() {
   if (cookiesResolved) return cachedCookiesPath;
   cookiesResolved = true;
 
+  let rawContent = null;
+
   // 1) Secret File di Render
   try {
     if (fs.existsSync(RENDER_SECRET_COOKIES_PATH)) {
-      const stat = fs.statSync(RENDER_SECRET_COOKIES_PATH);
-      if (stat.size > 50) { // un cookies.txt vero è lungo, uno vuoto/rotto no
-        console.log("[cookies] uso il Secret File di Render:", RENDER_SECRET_COOKIES_PATH);
-        cachedCookiesPath = RENDER_SECRET_COOKIES_PATH;
-        return cachedCookiesPath;
+      const content = fs.readFileSync(RENDER_SECRET_COOKIES_PATH, "utf8");
+      if (content && content.trim().length > 50) {
+        rawContent = content;
+        console.log("[cookies] letto Secret File di Render.");
       } else {
         console.warn("[cookies] Secret File trovato ma troppo piccolo/vuoto, lo ignoro.");
       }
@@ -45,38 +49,46 @@ function getYtdlpCookiesPath() {
     console.warn("[cookies] errore leggendo il Secret File:", e.message);
   }
 
-  // 2) Env var con contenuto diretto (protezione: se qualcuno ci mette per sbaglio
-  // un path invece del contenuto, lo scartiamo con un warning chiaro invece di
-  // scrivere un file cookies.txt corrotto come è successo prima).
-  const raw = process.env.YTDLP_COOKIES;
-  if (raw && raw.trim()) {
-    const trimmed = raw.trim();
-    if (trimmed.startsWith("/") || trimmed.startsWith("./")) {
-      console.warn(
-        "[cookies] YTDLP_COOKIES sembra un PERCORSO ('" + trimmed +
-        "') e non il contenuto del file: la ignoro. " +
-        "Se usi i Secret Files di Render non serve impostare questa env var."
-      );
-      return null;
-    }
-    try {
-      fs.writeFileSync(YTDLP_COOKIES_TMP_PATH, raw);
-      console.log("[cookies] cookies.txt scritto da YTDLP_COOKIES.");
-      cachedCookiesPath = YTDLP_COOKIES_TMP_PATH;
-      return cachedCookiesPath;
-    } catch (e) {
-      console.warn("[cookies] impossibile scrivere cookies.txt:", e.message);
-      return null;
+  // 2) Env var come fallback, solo se il Secret File non ha dato nulla
+  if (!rawContent) {
+    const raw = process.env.YTDLP_COOKIES;
+    if (raw && raw.trim()) {
+      const trimmed = raw.trim();
+      if (trimmed.startsWith("/") || trimmed.startsWith("./")) {
+        console.warn(
+          "[cookies] YTDLP_COOKIES sembra un PERCORSO ('" + trimmed +
+          "') e non il contenuto del file: la ignoro."
+        );
+      } else {
+        rawContent = raw;
+        console.log("[cookies] uso il contenuto di YTDLP_COOKIES.");
+      }
     }
   }
 
-  console.warn("[cookies] Nessun cookie trovato (né Secret File né YTDLP_COOKIES): yt-dlp funzionerà solo finché YouTube non blocca l'IP del server.");
-  return null;
+  if (!rawContent) {
+    console.warn("[cookies] Nessun cookie trovato: yt-dlp funzionerà solo finché YouTube non blocca l'IP del server.");
+    return null;
+  }
+
+  // Copia SEMPRE in un file temporaneo scrivibile, indipendentemente dalla fonte.
+  try {
+    fs.writeFileSync(YTDLP_COOKIES_TMP_PATH, rawContent);
+    cachedCookiesPath = YTDLP_COOKIES_TMP_PATH;
+    return cachedCookiesPath;
+  } catch (e) {
+    console.warn("[cookies] impossibile scrivere il file temporaneo:", e.message);
+    return null;
+  }
 }
 
 function withCookies(opts) {
   const cookiesPath = getYtdlpCookiesPath();
-  return cookiesPath ? { ...opts, cookies: cookiesPath } : opts;
+  const base = cookiesPath ? { ...opts, cookies: cookiesPath } : { ...opts };
+  // Aggira il blocco SABR sul client "web" forzando client alternativi non ancora
+  // colpiti dalla restrizione (tv/android/ios), con web come ultima risorsa.
+  base.extractorArgs = "youtube:player_client=tv,android,ios,web";
+  return base;
 }
 
 app.use(express.static(path.join(__dirname, "..", "public")));
