@@ -15,34 +15,65 @@ const os = require("os");
 const app = express();
 
 // --- COOKIE YOUTUBE PER YT-DLP ---
-// YouTube blocca sempre più spesso gli IP dei datacenter cloud (Render incluso)
-// chiedendo "Sign in to confirm you're not a bot". L'unico modo affidabile per
-// aggirarlo e' passare a yt-dlp i cookie di una sessione YouTube loggata.
-//
-// Come procurarseli: installa l'estensione "Get cookies.txt LOCALLY" su Chrome/Firefox,
-// loggati con un account Google secondario (NON il tuo principale: e' un server condiviso,
-// meglio non rischiare l'account vero), vai su youtube.com, esporta i cookie in formato
-// Netscape. Poi su Render, in Environment, crea una env var YTDLP_COOKIES e incollaci
-// dentro tutto il contenuto del file cookies.txt cosi' com'e' (multi-riga, va bene).
-const YTDLP_COOKIES_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
-let cookiesWritten = false;
+// Due modi supportati, in ordine di priorità:
+// 1) Secret File di Render chiamato "cookies.txt" -> Render lo monta automaticamente
+//    in /etc/secrets/cookies.txt, lo usiamo DIRETTAMENTE, nessuna env var richiesta.
+// 2) Env var YTDLP_COOKIES contenente il contenuto vero e proprio del cookies.txt
+//    (multi-riga, formato Netscape) — utile se non vuoi usare i Secret Files.
+const YTDLP_COOKIES_TMP_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
+const RENDER_SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
+let cookiesResolved = false;
+let cachedCookiesPath = null;
+
 function getYtdlpCookiesPath() {
-  if (cookiesWritten) return fs.existsSync(YTDLP_COOKIES_PATH) ? YTDLP_COOKIES_PATH : null;
-  const raw = process.env.YTDLP_COOKIES;
-  cookiesWritten = true; // proviamo una volta sola, non ritentiamo ad ogni richiesta
-  if (!raw || !raw.trim()) {
-    console.warn("[cookies] YTDLP_COOKIES non impostata: yt-dlp funzionera' solo finche' YouTube non blocca l'IP del server.");
-    return null;
-  }
+  if (cookiesResolved) return cachedCookiesPath;
+  cookiesResolved = true;
+
+  // 1) Secret File di Render
   try {
-    fs.writeFileSync(YTDLP_COOKIES_PATH, raw);
-    console.log("[cookies] cookies.txt scritto correttamente.");
-    return YTDLP_COOKIES_PATH;
+    if (fs.existsSync(RENDER_SECRET_COOKIES_PATH)) {
+      const stat = fs.statSync(RENDER_SECRET_COOKIES_PATH);
+      if (stat.size > 50) { // un cookies.txt vero è lungo, uno vuoto/rotto no
+        console.log("[cookies] uso il Secret File di Render:", RENDER_SECRET_COOKIES_PATH);
+        cachedCookiesPath = RENDER_SECRET_COOKIES_PATH;
+        return cachedCookiesPath;
+      } else {
+        console.warn("[cookies] Secret File trovato ma troppo piccolo/vuoto, lo ignoro.");
+      }
+    }
   } catch (e) {
-    console.warn("[cookies] impossibile scrivere cookies.txt:", e.message);
-    return null;
+    console.warn("[cookies] errore leggendo il Secret File:", e.message);
   }
+
+  // 2) Env var con contenuto diretto (protezione: se qualcuno ci mette per sbaglio
+  // un path invece del contenuto, lo scartiamo con un warning chiaro invece di
+  // scrivere un file cookies.txt corrotto come è successo prima).
+  const raw = process.env.YTDLP_COOKIES;
+  if (raw && raw.trim()) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("/") || trimmed.startsWith("./")) {
+      console.warn(
+        "[cookies] YTDLP_COOKIES sembra un PERCORSO ('" + trimmed +
+        "') e non il contenuto del file: la ignoro. " +
+        "Se usi i Secret Files di Render non serve impostare questa env var."
+      );
+      return null;
+    }
+    try {
+      fs.writeFileSync(YTDLP_COOKIES_TMP_PATH, raw);
+      console.log("[cookies] cookies.txt scritto da YTDLP_COOKIES.");
+      cachedCookiesPath = YTDLP_COOKIES_TMP_PATH;
+      return cachedCookiesPath;
+    } catch (e) {
+      console.warn("[cookies] impossibile scrivere cookies.txt:", e.message);
+      return null;
+    }
+  }
+
+  console.warn("[cookies] Nessun cookie trovato (né Secret File né YTDLP_COOKIES): yt-dlp funzionerà solo finché YouTube non blocca l'IP del server.");
+  return null;
 }
+
 function withCookies(opts) {
   const cookiesPath = getYtdlpCookiesPath();
   return cookiesPath ? { ...opts, cookies: cookiesPath } : opts;
