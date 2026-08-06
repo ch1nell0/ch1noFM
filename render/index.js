@@ -148,6 +148,91 @@ function getYouTubeId(url) {
   return match ? match[1] : null;
 }
 
+// --- PARSING TITOLO: prova a estrarre "Artista - Titolo" dal titolo del video ---
+// I canali freebooter/reupload mettono il loro nome come uploader, non come artista:
+// meglio fidarsi del titolo del video (che spesso segue la convenzione "Artista - Titolo")
+// e poi lasciare che iTunes/Deezer/MusicBrainz confermino/correggano l'artista reale.
+function cleanupVideoTitle(raw) {
+  if (!raw) return raw;
+  return raw
+    .replace(/\(?\[?(official\s*)?(music\s*)?video\)?\]?/gi, "")
+    .replace(/\(?\[?(official\s*)?(lyric[s]?\s*)?video\)?\]?/gi, "")
+    .replace(/\(?\[?(official\s*)?audio\)?\]?/gi, "")
+    .replace(/\(?\[?lyrics?\)?\]?/gi, "")
+    .replace(/\(?\[?hd\)?\]?/gi, "")
+    .replace(/\(?\[?4k\)?\]?/gi, "")
+    .replace(/\(?\[?visualizer\)?\]?/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function parseArtistTitle(rawTitle) {
+  const cleaned = cleanupVideoTitle(rawTitle);
+  const patterns = [/^(.+?)\s+-\s+(.+)$/, /^(.+?)\s*[:–—]\s*(.+)$/];
+  for (const p of patterns) {
+    const m = cleaned.match(p);
+    if (m && m[1].trim() && m[2].trim()) {
+      return { artist: m[1].trim(), title: m[2].trim() };
+    }
+  }
+  return { artist: null, title: cleaned };
+}
+
+// --- SPOTIFY: niente streaming reale (protetto), ma leggiamo titolo/artista/cover
+// dalla pagina pubblica del brano e poi scarichiamo l'equivalente audio da YouTube ---
+async function resolveSpotifyTrack(url) {
+  const { data: html } = await axios.get(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    timeout: 8000,
+  });
+
+  const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+  const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+
+  let title = null;
+  let artist = null;
+
+  if (titleMatch) {
+    const raw = titleMatch[1].replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&quot;/g, '"');
+    // Formato tipico della pagina Spotify: "Nome Brano - song by Artista1, Artista2 | Spotify"
+    const m = raw.match(/^(.*?)\s*-\s*song (?:and lyrics )?by\s*(.*?)\s*\|\s*Spotify$/i);
+    if (m) {
+      title = m[1].trim();
+      artist = m[2].trim();
+    } else {
+      title = raw.replace(/\s*\|\s*Spotify$/i, "").trim();
+    }
+  }
+
+  if (!title) throw new Error("Impossibile leggere i metadati dalla pagina Spotify.");
+
+  return { title, artist, cover: ogImageMatch ? ogImageMatch[1] : null };
+}
+
+async function downloadSpotifyViaYouTubeSearch(spotifyMeta, outputFile) {
+  const searchQuery = spotifyMeta.artist ? `${spotifyMeta.artist} ${spotifyMeta.title}` : spotifyMeta.title;
+  const searchTerm = `ytsearch1:${searchQuery}`;
+
+  const info = await ytDlp(searchTerm, {
+    dumpSingleJson: true,
+    noWarnings: true,
+    noPlaylist: true,
+    format: "bestaudio/best",
+  });
+  const videoInfo = info.entries ? info.entries[0] : info;
+
+  await ytDlp(searchTerm, {
+    extractAudio: true,
+    audioFormat: "mp3",
+    output: outputFile,
+    ffmpegLocation: ffmpegPath,
+    noPlaylist: true,
+    format: "bestaudio/best",
+  });
+
+  return videoInfo;
+}
+
 // --- METADATI YOUTUBE VIA OEMBED (endpoint pubblico ufficiale, no scraping) ---
 async function getYouTubeMeta(videoId, originalUrl) {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
@@ -156,13 +241,21 @@ async function getYouTubeMeta(videoId, originalUrl) {
 
   try {
     const res = await axios.get(oembedUrl, { timeout: 8000 });
+    const rawTitle = res.data.title || "YouTube Track";
+    const channelName = res.data.author_name || "YouTube";
+    const parsed = parseArtistTitle(rawTitle);
+
     return {
-      title: res.data.title || "YouTube Track",
-      artist: res.data.author_name || "YouTube",
+      title: parsed.title || rawTitle,
+      // Se il titolo del video segue "Artista - Titolo" usiamo quello; altrimenti
+      // teniamo il nome del canale solo come ultima spiaggia (verrà comunque
+      // ricontrollato/corretto da /enrich tramite iTunes/Deezer/MusicBrainz).
+      artist: parsed.artist || channelName,
+      channelName,
     };
   } catch (err) {
     console.warn("[YouTube oEmbed] fallito, uso fallback generico:", err.message);
-    return { title: "YouTube Track", artist: "YouTube" };
+    return { title: "YouTube Track", artist: "YouTube", channelName: "YouTube" };
   }
 }
 
@@ -254,61 +347,82 @@ function cacheSet(key, data) {
   }
 }
 
-// --- Copertina: iTunes -> Deezer -> MusicBrainz/CoverArtArchive ---
-async function coverFromItunes(title, artist) {
-  const term = `${artist} ${title}`.trim();
+// --- Copertina + ARTISTA CANONICO: iTunes -> Deezer -> MusicBrainz/CoverArtArchive ---
+// Ogni fonte restituisce anche il nome artista che LEI ha trovato per quel brano:
+// e' molto piu' affidabile del nome canale YouTube (che spesso e' un reupload/freebooter).
+async function trackFromItunes(title, artist) {
+  const term = `${artist || ""} ${title}`.trim();
   const { data } = await axios.get("https://itunes.apple.com/search", {
     params: { term, entity: "song", limit: 1 },
     timeout: 6000,
   });
   const hit = data.results && data.results[0];
-  if (!hit || !hit.artworkUrl100) return null;
-  return hit.artworkUrl100.replace("100x100bb", "600x600bb");
+  if (!hit) return null;
+  return {
+    cover: hit.artworkUrl100 ? hit.artworkUrl100.replace("100x100bb", "600x600bb") : null,
+    artist: hit.artistName || null,
+  };
 }
 
-async function coverFromDeezer(title, artist) {
-  const q = `${artist} ${title}`.trim();
+async function trackFromDeezer(title, artist) {
+  const q = `${artist || ""} ${title}`.trim();
   const { data } = await axios.get("https://api.deezer.com/search", {
     params: { q },
     timeout: 6000,
   });
   const hit = data.data && data.data[0];
-  const cover = hit && hit.album && (hit.album.cover_xl || hit.album.cover_big || hit.album.cover_medium);
-  return cover || null;
+  if (!hit) return null;
+  return {
+    cover: hit.album && (hit.album.cover_xl || hit.album.cover_big || hit.album.cover_medium),
+    artist: hit.artist && hit.artist.name,
+  };
 }
 
-async function coverFromMusicBrainz(title, artist) {
-  const query = `recording:"${title}" AND artist:"${artist}"`;
+async function trackFromMusicBrainz(title, artist) {
+  const query = artist ? `recording:"${title}" AND artist:"${artist}"` : `recording:"${title}"`;
   const { data } = await axios.get("https://musicbrainz.org/ws/2/recording/", {
     params: { query, fmt: "json", limit: 1 },
     headers: { "User-Agent": MB_USER_AGENT },
     timeout: 7000,
   });
   const rec = data.recordings && data.recordings[0];
-  const releaseId = rec && rec.releases && rec.releases[0] && rec.releases[0].id;
-  if (!releaseId) return null;
+  if (!rec) return null;
 
-  try {
-    const artUrl = `https://coverartarchive.org/release/${releaseId}/front-500`;
-    // Verifica che esista davvero prima di restituirla (HEAD per evitare di scaricare tutto).
-    await axios.head(artUrl, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
-    return artUrl;
-  } catch (e) {
-    return null;
+  const canonicalArtist = rec["artist-credit"] && rec["artist-credit"].map((c) => c.name).join(" & ");
+  const releaseId = rec.releases && rec.releases[0] && rec.releases[0].id;
+
+  let cover = null;
+  if (releaseId) {
+    try {
+      const artUrl = `https://coverartarchive.org/release/${releaseId}/front-500`;
+      await axios.head(artUrl, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
+      cover = artUrl;
+    } catch (e) { /* nessuna cover su Cover Art Archive per questa release */ }
   }
+
+  return { cover, artist: canonicalArtist || null };
 }
 
+// Restituisce { cover, canonicalArtist } usando la prima fonte che da' un risultato utile.
 async function findCoverArt(title, artist) {
-  const sources = [coverFromItunes, coverFromDeezer, coverFromMusicBrainz];
+  const sources = [trackFromItunes, trackFromDeezer, trackFromMusicBrainz];
+  let cover = null;
+  let canonicalArtist = null;
+
   for (const source of sources) {
     try {
-      const url = await source(title, artist);
-      if (url) return url;
+      const hit = await source(title, artist);
+      if (hit) {
+        if (!cover && hit.cover) cover = hit.cover;
+        if (!canonicalArtist && hit.artist) canonicalArtist = hit.artist;
+      }
     } catch (e) {
-      console.warn(`[cover:${source.name}] fallito:`, e.message);
+      console.warn(`[track:${source.name}] fallito:`, e.message);
     }
+    if (cover && canonicalArtist) break;
   }
-  return null;
+
+  return { cover, canonicalArtist };
 }
 
 // --- Artista: Wikipedia (bio + foto) -> Deezer (foto) -> Last.fm opzionale ---
@@ -351,7 +465,9 @@ async function findArtistInfo(artist) {
 
   let result = { bio: null, photo: null, name: artist };
 
-  // Bio: Last.fm (se disponibile) -> Wikipedia IT -> Wikipedia EN
+  // Last.fm per primo: e' l'unica fonte che ha pagine dedicate alle collaborazioni
+  // (es. "Freddie Gibbs & Madlib"), che Wikipedia di solito non ha come pagina a se'.
+  // Se LASTFM_API_KEY non e' impostata, questa fonte viene semplicemente saltata.
   const bioSources = [
     () => artistFromLastfm(artist),
     () => artistFromWikipedia(artist, "it"),
@@ -384,21 +500,25 @@ async function findArtistInfo(artist) {
 app.get("/enrich", async (req, res) => {
   const title = (req.query.title || "").toString().trim();
   const artist = (req.query.artist || "").toString().trim();
+  const coverHint = (req.query.coverHint || "").toString().trim() || null;
   if (!title && !artist) return res.status(400).json({ error: "title o artist mancanti." });
 
-  const cacheKey = `${title}|${artist}`;
+  const cacheKey = `${title}|${artist}|${coverHint || ""}`;
   const cached = cacheGet(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    const [cover, artistInfo] = await Promise.all([
-      findCoverArt(title, artist).catch(() => null),
-      findArtistInfo(artist).catch(() => ({ bio: null, photo: null, name: artist })),
-    ]);
+    // FASE 1: troviamo la copertina e, soprattutto, l'artista "vero" del brano
+    // (non il nome del canale YouTube che l'ha ripubblicato).
+    const { cover, canonicalArtist } = await findCoverArt(title, artist).catch(() => ({ cover: null, canonicalArtist: null }));
+    const resolvedArtist = canonicalArtist || artist || null;
+
+    // FASE 2: bio + foto artista, cercate sull'artista risolto in FASE 1.
+    const artistInfo = await findArtistInfo(resolvedArtist).catch(() => ({ bio: null, photo: null, name: resolvedArtist }));
 
     const result = {
-      cover: cover || null,
-      artistName: artistInfo.name || artist || null,
+      cover: coverHint || cover || null,
+      artistName: artistInfo.name || resolvedArtist || null,
       artistBio: artistInfo.bio || null,
       artistPhoto: artistInfo.photo || null,
     };
@@ -456,6 +576,38 @@ app.post("/download", async (req, res) => {
       artist: meta.artist,
       startedAt: Date.now(),
     });
+  }
+
+  // CASO 2.5: SPOTIFY -> non scaricabile direttamente (protetto), risolviamo i
+  // metadati (titolo/artista/cover) dalla pagina pubblica e cerchiamo l'audio
+  // equivalente su YouTube. Non passa da yt-dlp diretto ne' da ytmdl (che si
+  // aspetta un link YouTube), quindi ha una route sua.
+  if (cleanLink.includes("open.spotify.com")) {
+    const spotifyOutputFile = path.join(os.tmpdir(), `spotify_${Date.now()}.mp3`);
+    try {
+      const spotifyMeta = await resolveSpotifyTrack(cleanLink);
+      const videoInfo = await downloadSpotifyViaYouTubeSearch(spotifyMeta, spotifyOutputFile);
+
+      const audioBuffer = fs.readFileSync(spotifyOutputFile);
+      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_spotify.mp3`);
+
+      return res.json({
+        source: "file",
+        audioUrl,
+        title: spotifyMeta.title,
+        artist: spotifyMeta.artist || videoInfo.uploader || "Spotify",
+        // La cover di Spotify e' quasi sempre affidabile: la passiamo come suggerimento
+        // cosi' /enrich puo' usarla senza dover cercare altrove.
+        coverHint: spotifyMeta.cover || null,
+      });
+    } catch (err) {
+      console.error("[Errore Spotify]:", err.message);
+      return res.status(500).json({
+        error: "Download da Spotify fallito (a volte non si trova un audio equivalente su YouTube): " + err.message,
+      });
+    } finally {
+      if (fs.existsSync(spotifyOutputFile)) fs.unlinkSync(spotifyOutputFile);
+    }
   }
 
   // CASO 3: ALTRI SITI (yt-dlp, con fallback su ytmdl se fallisce)
