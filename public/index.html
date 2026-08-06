@@ -133,26 +133,22 @@
         .on-air .lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: blink 1.6s ease-in-out infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-        .platter { display: flex; justify-content: center; margin-bottom: 20px; position: relative; }
-        .vinyl {
-            width: 176px; height: 176px; border-radius: 50%;
-            background: repeating-radial-gradient(circle at center, #1a1d24 0px, #1a1d24 2px, #111318 3px, #111318 4px);
-            border: 1px solid var(--border);
-            display: flex; align-items: center; justify-content: center;
-            animation: spin 9s linear infinite;
-            animation-play-state: paused;
-            box-shadow: 0 12px 30px rgba(0,0,0,0.5);
+        .cover-frame-wrap { display: flex; justify-content: center; margin-bottom: 20px; }
+        .cover-frame {
+            width: 190px; height: 190px; border-radius: 22px; overflow: hidden;
+            position: relative; border: 1px solid var(--border);
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+            transition: box-shadow 0.5s ease, transform 0.5s ease;
         }
-        body.is-playing .vinyl { animation-play-state: running; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .album-cover {
-            width: 82px; height: 82px; border-radius: 50%; object-fit: cover;
-            border: 3px solid var(--bg-inset); box-shadow: 0 0 0 1px var(--border-soft);
+        body.is-playing .cover-frame {
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55), 0 0 0 3px var(--accent-soft), 0 0 44px rgba(255, 138, 61, 0.28);
         }
-        .platter::after {
-            content: ''; position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
-            background: var(--bg); border: 2px solid var(--accent); border-radius: 50%;
-            transform: translate(-50%, -50%);
+        .album-cover { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .cover-frame::after {
+            /* sottile riflesso in alto, da' un po' di profondità senza essere invadente */
+            content: ''; position: absolute; inset: 0;
+            background: linear-gradient(160deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 35%);
+            pointer-events: none;
         }
 
         .song-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; color: #fff; text-align: center; margin-bottom: 4px; word-break: break-word; line-height: 1.2; }
@@ -242,11 +238,11 @@
 
         @media (max-width: 420px) {
             .player-card, .queue-card, .request-card, .artist-card { padding: 20px; }
-            .vinyl { width: 148px; height: 148px; }
+            .cover-frame { width: 150px; height: 150px; }
         }
 
         @media (prefers-reduced-motion: reduce) {
-            .vinyl, .on-air .lamp, .waveform .bar { animation: none !important; }
+            .on-air .lamp, .waveform .bar { animation: none !important; }
         }
     </style>
 </head>
@@ -275,9 +271,9 @@
                 <div class="player-card">
                     <div class="on-air"><span class="lamp"></span> On air</div>
 
-                    <div class="platter">
-                        <div class="vinyl" id="vinyl">
-                            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB" alt="Cover">
+                    <div class="cover-frame-wrap">
+                        <div class="cover-frame">
+                            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/380/12151b/565c6a?text=%E2%99%AB" alt="Cover">
                         </div>
                     </div>
 
@@ -413,12 +409,31 @@
             }, 500);
         }
 
-        // ================= STATO RIPRODUZIONE (vinile + VU) =================
+        // ================= STATO RIPRODUZIONE (copertina + VU) =================
         function setPlayingState(isPlaying) {
             document.body.classList.toggle('is-playing', !!isPlaying);
         }
+
+        // ================= AUTO-ADVANCE: radio vera, niente skip manuale =================
+        // Tutti i client ascoltano la fine del brano e chiamano advanceQueue().
+        // Un piccolo ritardo casuale riduce (ma non azzera del tutto) la possibilità
+        // che due client tentino di avanzare nello stesso istante: se succede non è
+        // comunque un problema serio, nel peggiore dei casi lo start_time del prossimo
+        // brano si aggiorna due volte a distanza di pochi millisecondi.
+        let autoAdvanceLock = false;
+        function autoAdvance() {
+            if (autoAdvanceLock) return;
+            autoAdvanceLock = true;
+            const jitter = Math.random() * 700;
+            setTimeout(() => {
+                advanceQueue().finally(() => { autoAdvanceLock = false; });
+            }, jitter);
+        }
+
         window.addEventListener('chinofm:ytstate', (e) => {
-            setPlayingState(e.detail && e.detail.state === 1);
+            const state = e.detail && e.detail.state;
+            setPlayingState(state === 1);
+            if (state === 0) autoAdvance(); // 0 = YT.PlayerState.ENDED
         });
 
         // ================= BACHECA =================
@@ -471,18 +486,21 @@
 
         // ================= SCHEDA ARTISTA + COVER (via backend /enrich) =================
         let enrichSeq = 0;
-        async function loadEnrichment(title, artist) {
+        async function loadEnrichment(title, artist, coverHint) {
             const seq = ++enrichSeq;
             const artistNameEl = document.getElementById('artist-name');
             const artistBioEl = document.getElementById('artist-bio');
             const artistPhotoEl = document.getElementById('artist-photo');
+            const songArtistEl = document.getElementById('song-artist');
 
             artistNameEl.innerText = artist || '—';
             artistBioEl.innerText = 'Cerco informazioni...';
             artistBioEl.classList.add('is-empty');
+            if (coverHint) document.getElementById('album-cover').src = coverHint;
 
             try {
-                const url = `${BACKEND_URL}/enrich?title=${encodeURIComponent(title || '')}&artist=${encodeURIComponent(artist || '')}`;
+                let url = `${BACKEND_URL}/enrich?title=${encodeURIComponent(title || '')}&artist=${encodeURIComponent(artist || '')}`;
+                if (coverHint) url += `&coverHint=${encodeURIComponent(coverHint)}`;
                 const res = await fetch(url);
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
@@ -491,6 +509,9 @@
                 if (data.cover) document.getElementById('album-cover').src = data.cover;
                 artistPhotoEl.src = data.artistPhoto || 'https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB';
                 artistNameEl.innerText = data.artistName || artist || '—';
+                // L'artista "vero" trovato via iTunes/Deezer/MusicBrainz sostituisce
+                // eventuali nomi di canali freebooter mostrati inizialmente.
+                if (data.artistName) songArtistEl.innerText = data.artistName;
                 if (data.artistBio) {
                     artistBioEl.innerText = data.artistBio;
                     artistBioEl.classList.remove('is-empty');
@@ -608,6 +629,7 @@
                         songData.audioUrl = result.audioUrl;
                         songData.title = result.title;
                         songData.artist = result.artist;
+                        songData.coverHint = result.coverHint || null; // presente solo per i brani risolti da Spotify
                     } else {
                         throw new Error("Fonte non riconosciuta dal backend.");
                     }
@@ -624,6 +646,7 @@
                     artist: songData.artist,
                     audio_url: songData.audioUrl,
                     requested_by: songData.requestedBy,
+                    cover_hint: songData.coverHint || null,
                 });
                 if (insertError) throw new Error(insertError.message);
 
@@ -679,9 +702,12 @@
         audioPlayer.addEventListener('timeupdate', () => {
             if (audioPlayer.duration) updateWaveformProgress(audioPlayer.currentTime, audioPlayer.duration);
         });
+        audioPlayer.addEventListener('ended', () => {
+            autoAdvance();
+        });
         audioPlayer.addEventListener('error', () => {
             console.warn("Errore riproduzione audio, skip automatico.");
-            advanceQueue();
+            autoAdvance();
         });
 
         function renderCurrent(data) {
@@ -692,7 +718,7 @@
                 audioPlayer.pause();
                 audioPlayer.removeAttribute('src');
                 setPlayingState(false);
-                document.getElementById('album-cover').src = "https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB";
+                document.getElementById('album-cover').src = "https://via.placeholder.com/380/12151b/565c6a?text=%E2%99%AB";
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
                 document.getElementById('requested-by').innerText = "—";
@@ -710,7 +736,7 @@
             document.getElementById('requested-by').innerText = data.requested_by;
 
             buildWaveform((data.title || '') + '|' + (data.artist || ''));
-            loadEnrichment(data.title, data.artist);
+            loadEnrichment(data.title, data.artist, data.cover_hint);
 
             const audioUrl = data.audio_url || '';
             const isYouTube = audioUrl.startsWith && audioUrl.startsWith('yt:');
@@ -773,6 +799,7 @@
                 artist: next.artist,
                 audio_url: next.audio_url,
                 requested_by: next.requested_by,
+                cover_hint: next.cover_hint || null,
                 start_time: new Date().toISOString(),
             });
             await sb.from("queue").delete().eq("id", next.id);
