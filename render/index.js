@@ -107,9 +107,7 @@ function getYtdlpCookiesPath() {
 function withCookies(opts) {
   const cookiesPath = getYtdlpCookiesPath();
   const base = cookiesPath ? { ...opts, cookies: cookiesPath } : { ...opts };
-  // Aggira il blocco SABR sul client "web" forzando client alternativi non ancora
-  // colpiti dalla restrizione (tv/android/ios), con web come ultima risorsa.
-  base.extractorArgs = "youtube:player_client=tv,android,ios,web";
+  base.extractorArgs = "youtube:player_client=web,android";
   return base;
 }
 
