@@ -360,6 +360,56 @@ async function downloadWithYtmdlFallback(link) {
   }
 }
 
+// --- Variante di ytmdl basata su ricerca testuale (nessun --url): usata per Spotify,
+// dove non abbiamo un link YouTube diretto ma solo "Artista + Titolo" da cercare.
+// NOTA: anche questa passa da yt-dlp/YouTube sotto il cofano, quindi soffre dello
+// stesso blocco anti-bot finche' YTDLP_COOKIES non e' impostata.
+function runYtmdlSearch(query, outDir, fileBaseName) {
+  return new Promise((resolve, reject) => {
+    const args = ["-q", "-o", outDir, "--filename", fileBaseName, query];
+
+    const child = spawn("ytmdl", args, {
+      env: {
+        ...process.env,
+        PATH: `${path.dirname(ffmpegPath)}${path.delimiter}${process.env.PATH || ""}`,
+      },
+    });
+
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("ytmdl: timeout (60s) superato."));
+    }, 60000);
+
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(new Error("ytmdl non disponibile sul server: " + err.message));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) return reject(new Error(`ytmdl fallito (exit ${code}): ${stderr.slice(-400)}`));
+      resolve();
+    });
+  });
+}
+
+async function downloadWithYtmdlSearch(query) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ytmdl-search-"));
+  const fileBase = `track_${Date.now()}`;
+  try {
+    await runYtmdlSearch(query, tmpDir, fileBase);
+    const files = fs.readdirSync(tmpDir).filter((f) => f.toLowerCase().endsWith(".mp3"));
+    if (files.length === 0) throw new Error("ytmdl non ha prodotto alcun file mp3.");
+    const filePath = path.join(tmpDir, files[0]);
+    const buffer = fs.readFileSync(filePath);
+    const audioUrl = await uploadAudio(buffer, `${Date.now()}_ytmdl.mp3`);
+    return { audioUrl, downloadedName: files[0].replace(/\.mp3$/i, "") };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // --- ENRICHMENT: copertina album + info artista, con fallback a catena ---
 // Nessuna delle fonti sotto richiede una API key (tranne Last.fm, opzionale
 // se imposti la env var LASTFM_API_KEY su Render).
@@ -485,15 +535,52 @@ async function findCoverArt(title, artist) {
   return { cover: null, canonicalArtist: null };
 }
 
+// --- Validazione nome: evita di accettare foto/bio di un artista omonimo o
+// completamente sbagliato (es. la foto "Drake" restituita da Deezer che non era Drake). ---
+function normalizeArtistName(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/\(.*?\)/g, "") // rimuove "(musician)", "(rapper)" ecc.
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // rimuove accenti
+    .replace(/^the\s+/, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+function namesRoughlyMatch(a, b) {
+  const na = normalizeArtistName(a);
+  const nb = normalizeArtistName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  return na.includes(nb) || nb.includes(na);
+}
+
+// --- Divide il credito artista in stile Spotify: artista/i principale/i + featured,
+// cosi' possiamo mostrarli come schede separate e cliccabili. ---
+function parseArtistCredits(rawArtist) {
+  if (!rawArtist) return { primary: [], featured: [] };
+  let primaryPart = rawArtist;
+  let featuredPart = "";
+  const ftMatch = rawArtist.match(/^(.*?)\s*(?:ft\.?|feat\.?|featuring)\s+(.+)$/i);
+  if (ftMatch) {
+    primaryPart = ftMatch[1];
+    featuredPart = ftMatch[2];
+  }
+  const splitNames = (s) =>
+    s.split(/\s*(?:&|,|\/| x |×)\s*/i).map((n) => n.trim()).filter(Boolean);
+  return { primary: splitNames(primaryPart), featured: splitNames(featuredPart) };
+}
+
 // --- Artista: Wikipedia (bio + foto) -> Deezer (foto) -> Last.fm opzionale ---
 async function artistFromWikipedia(artist, lang) {
   const url = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(artist)}`;
   const { data } = await axios.get(url, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
   if (!data || data.type === "disambiguation") return null;
+  const name = data.title || artist;
+  if (!namesRoughlyMatch(artist, name)) return null; // pagina non pertinente, la scartiamo
   return {
     bio: data.extract || null,
     photo: (data.thumbnail && data.thumbnail.source) || (data.originalimage && data.originalimage.source) || null,
-    name: data.title || artist,
+    name,
   };
 }
 
@@ -503,7 +590,7 @@ async function artistFromDeezer(artist) {
     timeout: 6000,
   });
   const hit = data.data && data.data[0];
-  if (!hit) return null;
+  if (!hit || !namesRoughlyMatch(artist, hit.name)) return null; // scarta match dubbi/omonimi
   return { bio: null, photo: hit.picture_xl || hit.picture_big || hit.picture_medium || null, name: hit.name };
 }
 
@@ -573,17 +660,28 @@ app.get("/enrich", async (req, res) => {
     const { cover, canonicalArtist } = await findCoverArt(title, artist).catch(() => ({ cover: null, canonicalArtist: null }));
     const resolvedArtist = canonicalArtist || artist || null;
 
-    // FASE 2: bio + foto artista. Per la bio togliamo eventuali "Ft. X" (l'artista
-    // ospite non ha una pagina bio a se' stante), ma lasciamo intatte le collab vere
-    // e proprie tipo "A & B" (es. Freddie Gibbs & Madlib), che Last.fm gestisce bene.
-    const bioSearchArtist = stripFeaturedArtist(resolvedArtist);
-    const artistInfo = await findArtistInfo(bioSearchArtist).catch(() => ({ bio: null, photo: null, name: resolvedArtist }));
+    // FASE 2: come fa Spotify, separiamo l'artista/i principale/i dai featured
+    // (es. "Alchemist Ft. Nina Sky" -> principale: Alchemist, featured: Nina Sky;
+    // "Freddie Gibbs & Madlib" -> entrambi principali, e' una collab vera e propria).
+    // Ognuno viene cercato separatamente cosi' il frontend puo' mostrarli come
+    // schede cliccabili distinte, invece di un'unica bio confusa.
+    const credits = parseArtistCredits(resolvedArtist);
+    const primaryNames = credits.primary.length ? credits.primary : (resolvedArtist ? [resolvedArtist] : []);
+    const featuredNames = credits.featured.slice(0, 3); // limite di buon senso sulle chiamate esterne
+
+    const artists = [];
+    for (const name of primaryNames.slice(0, 2)) {
+      const info = await findArtistInfo(name).catch(() => null);
+      artists.push({ name: (info && info.name) || name, role: "primary", bio: (info && info.bio) || null, photo: (info && info.photo) || null });
+    }
+    for (const name of featuredNames) {
+      const info = await findArtistInfo(name).catch(() => null);
+      artists.push({ name: (info && info.name) || name, role: "featured", bio: (info && info.bio) || null, photo: (info && info.photo) || null });
+    }
 
     const result = {
       cover: coverHint || cover || null,
-      artistName: artistInfo.name || resolvedArtist || null,
-      artistBio: artistInfo.bio || null,
-      artistPhoto: artistInfo.photo || null,
+      artists,
     };
 
     cacheSet(cacheKey, result);
@@ -643,14 +741,20 @@ app.post("/download", async (req, res) => {
 
   // CASO 2.5: SPOTIFY -> non scaricabile direttamente (protetto), risolviamo i
   // metadati (titolo/artista/cover) dalla pagina pubblica e cerchiamo l'audio
-  // equivalente su YouTube. Non passa da yt-dlp diretto ne' da ytmdl (che si
-  // aspetta un link YouTube), quindi ha una route sua.
+  // equivalente su YouTube (prima con yt-dlp diretto, poi con ytmdl come seconda
+  // via). Entrambi passano da YouTube, quindi entrambi dipendono da YTDLP_COOKIES.
   if (cleanLink.includes("open.spotify.com")) {
     const spotifyOutputFile = path.join(os.tmpdir(), `spotify_${Date.now()}.mp3`);
+    let spotifyMeta;
     try {
-      const spotifyMeta = await resolveSpotifyTrack(cleanLink);
-      const videoInfo = await downloadSpotifyViaYouTubeSearch(spotifyMeta, spotifyOutputFile);
+      spotifyMeta = await resolveSpotifyTrack(cleanLink);
+    } catch (err) {
+      console.error("[Errore Spotify - metadata]:", err.message);
+      return res.status(500).json({ error: "Impossibile leggere i metadati da Spotify: " + err.message });
+    }
 
+    try {
+      const videoInfo = await downloadSpotifyViaYouTubeSearch(spotifyMeta, spotifyOutputFile);
       const audioBuffer = fs.readFileSync(spotifyOutputFile);
       const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_spotify.mp3`);
 
@@ -663,11 +767,27 @@ app.post("/download", async (req, res) => {
         // cosi' /enrich puo' usarla senza dover cercare altrove.
         coverHint: spotifyMeta.cover || null,
       });
-    } catch (err) {
-      console.error("[Errore Spotify]:", err.message);
-      return res.status(500).json({
-        error: "Download da Spotify fallito (a volte non si trova un audio equivalente su YouTube): " + err.message,
-      });
+    } catch (ytDlpErr) {
+      console.warn("[Spotify: yt-dlp diretto fallito, provo ytmdl]:", ytDlpErr.message);
+      try {
+        const query = spotifyMeta.artist ? `${spotifyMeta.artist} ${spotifyMeta.title}` : spotifyMeta.title;
+        const ytmdlResult = await downloadWithYtmdlSearch(query);
+
+        return res.json({
+          source: "file",
+          audioUrl: ytmdlResult.audioUrl,
+          title: spotifyMeta.title,
+          artist: spotifyMeta.artist || "Spotify",
+          coverHint: spotifyMeta.cover || null,
+        });
+      } catch (ytmdlErr) {
+        console.error("[Errore Spotify - anche ytmdl fallito]:", ytmdlErr.message);
+        return res.status(500).json({
+          error:
+            "Download da Spotify fallito (yt-dlp: " + ytDlpErr.message + " | ytmdl: " + ytmdlErr.message + "). " +
+            "Molto probabilmente serve impostare YTDLP_COOKIES su Render: YouTube sta bloccando l'IP del server.",
+        });
+      }
     } finally {
       if (fs.existsSync(spotifyOutputFile)) fs.unlinkSync(spotifyOutputFile);
     }
