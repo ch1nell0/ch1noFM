@@ -14,6 +14,40 @@ const os = require("os");
 
 const app = express();
 
+// --- COOKIE YOUTUBE PER YT-DLP ---
+// YouTube blocca sempre più spesso gli IP dei datacenter cloud (Render incluso)
+// chiedendo "Sign in to confirm you're not a bot". L'unico modo affidabile per
+// aggirarlo e' passare a yt-dlp i cookie di una sessione YouTube loggata.
+//
+// Come procurarseli: installa l'estensione "Get cookies.txt LOCALLY" su Chrome/Firefox,
+// loggati con un account Google secondario (NON il tuo principale: e' un server condiviso,
+// meglio non rischiare l'account vero), vai su youtube.com, esporta i cookie in formato
+// Netscape. Poi su Render, in Environment, crea una env var YTDLP_COOKIES e incollaci
+// dentro tutto il contenuto del file cookies.txt cosi' com'e' (multi-riga, va bene).
+const YTDLP_COOKIES_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
+let cookiesWritten = false;
+function getYtdlpCookiesPath() {
+  if (cookiesWritten) return fs.existsSync(YTDLP_COOKIES_PATH) ? YTDLP_COOKIES_PATH : null;
+  const raw = process.env.YTDLP_COOKIES;
+  cookiesWritten = true; // proviamo una volta sola, non ritentiamo ad ogni richiesta
+  if (!raw || !raw.trim()) {
+    console.warn("[cookies] YTDLP_COOKIES non impostata: yt-dlp funzionera' solo finche' YouTube non blocca l'IP del server.");
+    return null;
+  }
+  try {
+    fs.writeFileSync(YTDLP_COOKIES_PATH, raw);
+    console.log("[cookies] cookies.txt scritto correttamente.");
+    return YTDLP_COOKIES_PATH;
+  } catch (e) {
+    console.warn("[cookies] impossibile scrivere cookies.txt:", e.message);
+    return null;
+  }
+}
+function withCookies(opts) {
+  const cookiesPath = getYtdlpCookiesPath();
+  return cookiesPath ? { ...opts, cookies: cookiesPath } : opts;
+}
+
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.use(cors());
@@ -213,22 +247,22 @@ async function downloadSpotifyViaYouTubeSearch(spotifyMeta, outputFile) {
   const searchQuery = spotifyMeta.artist ? `${spotifyMeta.artist} ${spotifyMeta.title}` : spotifyMeta.title;
   const searchTerm = `ytsearch1:${searchQuery}`;
 
-  const info = await ytDlp(searchTerm, {
+  const info = await ytDlp(searchTerm, withCookies({
     dumpSingleJson: true,
     noWarnings: true,
     noPlaylist: true,
     format: "bestaudio/best",
-  });
+  }));
   const videoInfo = info.entries ? info.entries[0] : info;
 
-  await ytDlp(searchTerm, {
+  await ytDlp(searchTerm, withCookies({
     extractAudio: true,
     audioFormat: "mp3",
     output: outputFile,
     ffmpegLocation: ffmpegPath,
     noPlaylist: true,
     format: "bestaudio/best",
-  });
+  }));
 
   return videoInfo;
 }
@@ -403,8 +437,9 @@ async function trackFromMusicBrainz(title, artist) {
   return { cover, artist: canonicalArtist || null };
 }
 
-// Restituisce { cover, canonicalArtist } usando la prima fonte che da' un risultato utile.
-async function findCoverArt(title, artist) {
+// Restituisce { cover, canonicalArtist } usando la prima fonte che da' un risultato utile,
+// per una data coppia (title, artist).
+async function findCoverArtOnce(title, artist) {
   const sources = [trackFromItunes, trackFromDeezer, trackFromMusicBrainz];
   let cover = null;
   let canonicalArtist = null;
@@ -423,6 +458,31 @@ async function findCoverArt(title, artist) {
   }
 
   return { cover, canonicalArtist };
+}
+
+function stripFeaturedArtist(artist) {
+  if (!artist) return artist;
+  const m = artist.match(/^(.*?)\s*(?:ft\.?|feat\.?|featuring)\s+.+$/i);
+  return m ? m[1].trim() : artist;
+}
+
+// Molti reupload/freebooter mettono il titolo del video in ordine "Titolo - Artista"
+// invece di "Artista - Titolo" (o viceversa), quindi non ci si puo' fidare ciecamente
+// dell'ordine che abbiamo indovinato. Proviamo piu' combinazioni finche' una non da'
+// un risultato, e ci fidiamo del nome artista restituito dal provider (non del nostro).
+async function findCoverArt(title, artist) {
+  const primaryArtist = stripFeaturedArtist(artist);
+  const attempts = [];
+  if (primaryArtist && primaryArtist !== artist) attempts.push([title, primaryArtist]);
+  if (title || artist) attempts.push([title, artist]);
+  if (title && artist) attempts.push([artist, title]); // ordine invertito
+  if (title) attempts.push([title, null]); // solo titolo, nessun bias sull'artista
+
+  for (const [t, a] of attempts) {
+    const hit = await findCoverArtOnce(t, a).catch(() => ({ cover: null, canonicalArtist: null }));
+    if (hit.cover || hit.canonicalArtist) return hit;
+  }
+  return { cover: null, canonicalArtist: null };
 }
 
 // --- Artista: Wikipedia (bio + foto) -> Deezer (foto) -> Last.fm opzionale ---
@@ -513,8 +573,11 @@ app.get("/enrich", async (req, res) => {
     const { cover, canonicalArtist } = await findCoverArt(title, artist).catch(() => ({ cover: null, canonicalArtist: null }));
     const resolvedArtist = canonicalArtist || artist || null;
 
-    // FASE 2: bio + foto artista, cercate sull'artista risolto in FASE 1.
-    const artistInfo = await findArtistInfo(resolvedArtist).catch(() => ({ bio: null, photo: null, name: resolvedArtist }));
+    // FASE 2: bio + foto artista. Per la bio togliamo eventuali "Ft. X" (l'artista
+    // ospite non ha una pagina bio a se' stante), ma lasciamo intatte le collab vere
+    // e proprie tipo "A & B" (es. Freddie Gibbs & Madlib), che Last.fm gestisce bene.
+    const bioSearchArtist = stripFeaturedArtist(resolvedArtist);
+    const artistInfo = await findArtistInfo(bioSearchArtist).catch(() => ({ bio: null, photo: null, name: resolvedArtist }));
 
     const result = {
       cover: coverHint || cover || null,
@@ -615,16 +678,16 @@ app.post("/download", async (req, res) => {
   try {
     let videoInfo;
     try {
-      const info = await ytDlp(cleanLink, {
+      const info = await ytDlp(cleanLink, withCookies({
         dumpSingleJson: true,
         noWarnings: true,
         noPlaylist: true,
         format: "bestaudio/best",
         defaultSearch: "ytsearch1:",
-      });
+      }));
       videoInfo = info.entries ? info.entries[0] : info;
 
-      await ytDlp(cleanLink, {
+      await ytDlp(cleanLink, withCookies({
         extractAudio: true,
         audioFormat: "mp3",
         output: outputFile,
@@ -632,7 +695,7 @@ app.post("/download", async (req, res) => {
         noPlaylist: true,
         format: "bestaudio/best",
         defaultSearch: "ytsearch1:",
-      });
+      }));
 
       const audioBuffer = fs.readFileSync(outputFile);
       const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
