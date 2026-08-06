@@ -315,6 +315,7 @@ async function downloadSpotifyViaYouTubeSearch(spotifyMeta, outputFile) {
     noWarnings: true,
     noPlaylist: true,
     format: "bestaudio/best",
+    verbose: true, // TEMPORANEO: ci mostra se il PO Token provider (bgutil) è registrato
   }));
   const videoInfo = info.entries ? info.entries[0] : info;
 
