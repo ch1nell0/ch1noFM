@@ -231,6 +231,18 @@
         .artist-name { font-family: var(--font-display); font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
         .artist-bio { font-size: 0.76rem; color: var(--text-dim); line-height: 1.55; text-align: left; }
         .artist-bio.is-empty { color: var(--text-faint); font-style: italic; text-align: center; }
+        /* Selettore artisti in stile Spotify: principale + featured, cliccabili per switchare */
+        .artist-switcher { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+        .artist-chip {
+            display: flex; align-items: center; gap: 6px; background: var(--bg-inset);
+            border: 1px solid var(--border-soft); border-radius: 999px; padding: 4px 10px 4px 4px;
+            cursor: pointer; font-size: 0.68rem; color: var(--text-dim);
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        .artist-chip img { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; display: block; }
+        .artist-chip:hover { color: var(--text); border-color: var(--border); }
+        .artist-chip.active { border-color: var(--accent); color: var(--accent); }
+        .artist-chip .role { font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
         .artist-source { font-size: 0.62rem; color: var(--text-faint); margin-top: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
 
         ::-webkit-scrollbar { width: 6px; }
@@ -329,6 +341,7 @@
                     </div>
                     <div class="artist-name" id="artist-name">—</div>
                     <div class="artist-bio is-empty" id="artist-bio">Nessun brano in riproduzione.</div>
+                    <div class="artist-switcher" id="artist-switcher"></div>
                 </div>
             </div>
         </div>
@@ -485,7 +498,43 @@
         loadBoard();
 
         // ================= SCHEDA ARTISTA + COVER (via backend /enrich) =================
+        // Stile Spotify: artista/i principale/i + featured come schede cliccabili separate.
         let enrichSeq = 0;
+        let currentArtists = [];
+        const PLACEHOLDER_ARTIST_PHOTO = 'https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB';
+
+        function showArtist(idx) {
+            const a = currentArtists[idx];
+            if (!a) return;
+            document.getElementById('artist-name').innerText = a.name || '—';
+            document.getElementById('artist-photo').src = a.photo || PLACEHOLDER_ARTIST_PHOTO;
+            const bioEl = document.getElementById('artist-bio');
+            if (a.bio) {
+                bioEl.innerText = a.bio;
+                bioEl.classList.remove('is-empty');
+            } else {
+                bioEl.innerText = 'Nessuna biografia trovata.';
+                bioEl.classList.add('is-empty');
+            }
+            document.querySelectorAll('#artist-switcher .artist-chip').forEach((chip, i) => {
+                chip.classList.toggle('active', i === idx);
+            });
+        }
+
+        function renderArtistSwitcher(artists) {
+            currentArtists = artists;
+            const el = document.getElementById('artist-switcher');
+            el.innerHTML = '';
+            if (artists.length <= 1) return; // niente da switchare con un solo artista
+            artists.forEach((a, i) => {
+                const chip = document.createElement('div');
+                chip.className = 'artist-chip' + (i === 0 ? ' active' : '');
+                chip.innerHTML = `<img src="${a.photo || PLACEHOLDER_ARTIST_PHOTO}" alt=""><span>${escapeHtml(a.name)}</span><span class="role">${a.role === 'featured' ? 'feat.' : ''}</span>`;
+                chip.addEventListener('click', () => showArtist(i));
+                el.appendChild(chip);
+            });
+        }
+
         async function loadEnrichment(title, artist, coverHint) {
             const seq = ++enrichSeq;
             const artistNameEl = document.getElementById('artist-name');
@@ -496,6 +545,8 @@
             artistNameEl.innerText = artist || '—';
             artistBioEl.innerText = 'Cerco informazioni...';
             artistBioEl.classList.add('is-empty');
+            artistPhotoEl.src = PLACEHOLDER_ARTIST_PHOTO;
+            document.getElementById('artist-switcher').innerHTML = '';
             if (coverHint) document.getElementById('album-cover').src = coverHint;
 
             try {
@@ -507,16 +558,17 @@
                 if (seq !== enrichSeq) return; // una richiesta più recente ha già preso il sopravvento
 
                 if (data.cover) document.getElementById('album-cover').src = data.cover;
-                artistPhotoEl.src = data.artistPhoto || 'https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB';
-                artistNameEl.innerText = data.artistName || artist || '—';
-                // L'artista "vero" trovato via iTunes/Deezer/MusicBrainz sostituisce
-                // eventuali nomi di canali freebooter mostrati inizialmente.
-                if (data.artistName) songArtistEl.innerText = data.artistName;
-                if (data.artistBio) {
-                    artistBioEl.innerText = data.artistBio;
-                    artistBioEl.classList.remove('is-empty');
+
+                const artists = Array.isArray(data.artists) ? data.artists : [];
+                if (artists.length > 0) {
+                    renderArtistSwitcher(artists);
+                    showArtist(0);
+                    // L'artista principale "vero" (trovato via iTunes/Deezer/MusicBrainz)
+                    // sostituisce eventuali nomi di canali freebooter mostrati inizialmente.
+                    const primaryNames = artists.filter(a => a.role === 'primary').map(a => a.name).join(' & ');
+                    if (primaryNames) songArtistEl.innerText = primaryNames;
                 } else {
-                    artistBioEl.innerText = 'Nessuna biografia trovata.';
+                    artistBioEl.innerText = 'Nessuna informazione trovata.';
                     artistBioEl.classList.add('is-empty');
                 }
             } catch (e) {
@@ -726,6 +778,8 @@
                 document.getElementById('artist-bio').innerText = "Nessun brano in riproduzione.";
                 document.getElementById('artist-bio').classList.add('is-empty');
                 document.getElementById('artist-photo').src = "https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB";
+                document.getElementById('artist-switcher').innerHTML = '';
+                currentArtists = [];
                 buildWaveform('idle');
                 updateWaveformProgress(0, 0);
                 return;
