@@ -1,749 +1,844 @@
-// name=render/index.js
-const express = require("express");
-const cors = require("cors");
-const multer = require("multer");
-const axios = require("axios");
-const FormData = require("form-data");
-const ytDlp = require("yt-dlp-exec");
-const ffmpegPath = require("ffmpeg-static");
-const puppeteer = require("puppeteer");
-const { spawn } = require("child_process");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-
-const app = express();
-
-// --- COOKIE YOUTUBE PER YT-DLP ---
-// YouTube blocca sempre più spesso gli IP dei datacenter cloud (Render incluso)
-// chiedendo "Sign in to confirm you're not a bot". L'unico modo affidabile per
-// aggirarlo e' passare a yt-dlp i cookie di una sessione YouTube loggata.
-//
-// Come procurarseli: installa l'estensione "Get cookies.txt LOCALLY" su Chrome/Firefox,
-// loggati con un account Google secondario (NON il tuo principale: e' un server condiviso,
-// meglio non rischiare l'account vero), vai su youtube.com, esporta i cookie in formato
-// Netscape. Poi su Render, in Environment, crea una env var YTDLP_COOKIES e incollaci
-// dentro tutto il contenuto del file cookies.txt cosi' com'e' (multi-riga, va bene).
-const YTDLP_COOKIES_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
-let cookiesWritten = false;
-function getYtdlpCookiesPath() {
-  if (cookiesWritten) return fs.existsSync(YTDLP_COOKIES_PATH) ? YTDLP_COOKIES_PATH : null;
-  const raw = process.env.YTDLP_COOKIES;
-  cookiesWritten = true; // proviamo una volta sola, non ritentiamo ad ogni richiesta
-  if (!raw || !raw.trim()) {
-    console.warn("[cookies] YTDLP_COOKIES non impostata: yt-dlp funzionera' solo finche' YouTube non blocca l'IP del server.");
-    return null;
-  }
-  try {
-    fs.writeFileSync(YTDLP_COOKIES_PATH, raw);
-    console.log("[cookies] cookies.txt scritto correttamente.");
-    return YTDLP_COOKIES_PATH;
-  } catch (e) {
-    console.warn("[cookies] impossibile scrivere cookies.txt:", e.message);
-    return null;
-  }
-}
-function withCookies(opts) {
-  const cookiesPath = getYtdlpCookiesPath();
-  return cookiesPath ? { ...opts, cookies: cookiesPath } : opts;
-}
-
-app.use(express.static(path.join(__dirname, "..", "public")));
-
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
-});
-
-// --- HEALTH CHECK (per UptimeRobot / cron esterni) ---
-app.get("/health", (req, res) => res.status(200).send("OK"));
-app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
-
-// --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
-async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
-  const form = new FormData();
-  form.append("reqtype", "fileupload");
-  form.append("time", time);
-  form.append("fileToUpload", fileBuffer, fileName);
-
-  const res = await axios.post(
-    "https://litterbox.catbox.moe/resources/internals/api.php",
-    form,
-    { headers: form.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
-  );
-  return res.data.trim();
-}
-
-async function uploadToCatbox(fileBuffer, fileName) {
-  const form = new FormData();
-  form.append("reqtype", "fileupload");
-  form.append("fileToUpload", fileBuffer, fileName);
-
-  const res = await axios.post(
-    "https://catbox.moe/user/api.php",
-    form,
-    { headers: form.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
-  );
-  return res.data.trim();
-}
-
-async function uploadToPixeldrain(fileBuffer, fileName) {
-  const form = new FormData();
-  form.append("file", fileBuffer, fileName);
-
-  const res = await axios.post("https://pixeldrain.com/api/file", form, {
-    headers: form.getHeaders(),
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-  });
-  return `https://pixeldrain.com/api/file/${res.data.id}`;
-}
-
-async function uploadAudio(fileBuffer, fileName) {
-  try {
-    return await uploadToLitterbox(fileBuffer, fileName);
-  } catch (e1) {
-    console.warn("[Litterbox fallito]:", e1.message);
-    try {
-      return await uploadToCatbox(fileBuffer, fileName);
-    } catch (e2) {
-      console.warn("[Catbox fallito]:", e2.message);
-      return await uploadToPixeldrain(fileBuffer, fileName);
-    }
-  }
-}
-
-const PUPPETEER_LAUNCH_OPTIONS = {
-  headless: "new",
-  args: [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-accelerated-2d-canvas",
-    "--disable-gpu",
-  ],
-};
-
-// --- SCRAPER DEDICATO: TYPETYPE.VIDEO ---
-async function downloadFromTypeType(url) {
-  console.log(`[TypeType] Avvio intercettazione headless per: ${url}`);
-  const browser = await puppeteer.launch(PUPPETEER_LAUNCH_OPTIONS);
-  const page = await browser.newPage();
-
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-  );
-
-  const chunks = [];
-  let videoTitle = "Traccia TypeType";
-
-  page.on("response", async (response) => {
-    const reqUrl = response.url();
-    if (
-      reqUrl.includes("/sabr/") ||
-      reqUrl.includes("/segment/") ||
-      reqUrl.includes(".m4s") ||
-      reqUrl.includes("googlevideo.com")
-    ) {
-      try {
-        const buf = await response.buffer();
-        if (buf && buf.length > 0) chunks.push(buf);
-      } catch (err) {}
-    }
-  });
-
-  try {
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 });
-    try {
-      const t = await page.title();
-      if (t) videoTitle = t.replace(" - TypeType", "").trim();
-    } catch (e) {}
-
-    await new Promise((r) => setTimeout(r, 7000));
-  } finally {
-    await browser.close();
-  }
-
-  if (chunks.length === 0) {
-    throw new Error("Nessun segmento audio/video intercettato da TypeType.");
-  }
-
-  return {
-    buffer: Buffer.concat(chunks),
-    title: videoTitle,
-  };
-}
-
-function getYouTubeId(url) {
-  const match = url.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-  return match ? match[1] : null;
-}
-
-// --- PARSING TITOLO: prova a estrarre "Artista - Titolo" dal titolo del video ---
-// I canali freebooter/reupload mettono il loro nome come uploader, non come artista:
-// meglio fidarsi del titolo del video (che spesso segue la convenzione "Artista - Titolo")
-// e poi lasciare che iTunes/Deezer/MusicBrainz confermino/correggano l'artista reale.
-function cleanupVideoTitle(raw) {
-  if (!raw) return raw;
-  return raw
-    .replace(/\(?\[?(official\s*)?(music\s*)?video\)?\]?/gi, "")
-    .replace(/\(?\[?(official\s*)?(lyric[s]?\s*)?video\)?\]?/gi, "")
-    .replace(/\(?\[?(official\s*)?audio\)?\]?/gi, "")
-    .replace(/\(?\[?lyrics?\)?\]?/gi, "")
-    .replace(/\(?\[?hd\)?\]?/gi, "")
-    .replace(/\(?\[?4k\)?\]?/gi, "")
-    .replace(/\(?\[?visualizer\)?\]?/gi, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
-function parseArtistTitle(rawTitle) {
-  const cleaned = cleanupVideoTitle(rawTitle);
-  const patterns = [/^(.+?)\s+-\s+(.+)$/, /^(.+?)\s*[:–—]\s*(.+)$/];
-  for (const p of patterns) {
-    const m = cleaned.match(p);
-    if (m && m[1].trim() && m[2].trim()) {
-      return { artist: m[1].trim(), title: m[2].trim() };
-    }
-  }
-  return { artist: null, title: cleaned };
-}
-
-// --- SPOTIFY: niente streaming reale (protetto), ma leggiamo titolo/artista/cover
-// dalla pagina pubblica del brano e poi scarichiamo l'equivalente audio da YouTube ---
-async function resolveSpotifyTrack(url) {
-  const { data: html } = await axios.get(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-    timeout: 8000,
-  });
-
-  const titleMatch = html.match(/<title>(.*?)<\/title>/i);
-  const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
-
-  let title = null;
-  let artist = null;
-
-  if (titleMatch) {
-    const raw = titleMatch[1].replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&quot;/g, '"');
-    // Formato tipico della pagina Spotify: "Nome Brano - song by Artista1, Artista2 | Spotify"
-    const m = raw.match(/^(.*?)\s*-\s*song (?:and lyrics )?by\s*(.*?)\s*\|\s*Spotify$/i);
-    if (m) {
-      title = m[1].trim();
-      artist = m[2].trim();
-    } else {
-      title = raw.replace(/\s*\|\s*Spotify$/i, "").trim();
-    }
-  }
-
-  if (!title) throw new Error("Impossibile leggere i metadati dalla pagina Spotify.");
-
-  return { title, artist, cover: ogImageMatch ? ogImageMatch[1] : null };
-}
-
-async function downloadSpotifyViaYouTubeSearch(spotifyMeta, outputFile) {
-  const searchQuery = spotifyMeta.artist ? `${spotifyMeta.artist} ${spotifyMeta.title}` : spotifyMeta.title;
-  const searchTerm = `ytsearch1:${searchQuery}`;
-
-  const info = await ytDlp(searchTerm, withCookies({
-    dumpSingleJson: true,
-    noWarnings: true,
-    noPlaylist: true,
-    format: "bestaudio/best",
-  }));
-  const videoInfo = info.entries ? info.entries[0] : info;
-
-  await ytDlp(searchTerm, withCookies({
-    extractAudio: true,
-    audioFormat: "mp3",
-    output: outputFile,
-    ffmpegLocation: ffmpegPath,
-    noPlaylist: true,
-    format: "bestaudio/best",
-  }));
-
-  return videoInfo;
-}
-
-// --- METADATI YOUTUBE VIA OEMBED (endpoint pubblico ufficiale, no scraping) ---
-async function getYouTubeMeta(videoId, originalUrl) {
-  const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
-    `https://www.youtube.com/watch?v=${videoId}`
-  )}&format=json`;
-
-  try {
-    const res = await axios.get(oembedUrl, { timeout: 8000 });
-    const rawTitle = res.data.title || "YouTube Track";
-    const channelName = res.data.author_name || "YouTube";
-    const parsed = parseArtistTitle(rawTitle);
-
-    return {
-      title: parsed.title || rawTitle,
-      // Se il titolo del video segue "Artista - Titolo" usiamo quello; altrimenti
-      // teniamo il nome del canale solo come ultima spiaggia (verrà comunque
-      // ricontrollato/corretto da /enrich tramite iTunes/Deezer/MusicBrainz).
-      artist: parsed.artist || channelName,
-      channelName,
-    };
-  } catch (err) {
-    console.warn("[YouTube oEmbed] fallito, uso fallback generico:", err.message);
-    return { title: "YouTube Track", artist: "YouTube", channelName: "YouTube" };
-  }
-}
-
-// --- FALLBACK: YTMDL (usato quando yt-dlp fallisce sui siti generici) ---
-// Richiede: Python 3 + `pip install ytmdl` disponibili nell'ambiente Render
-// (aggiungi un build step, es. `pip install ytmdl` nel build command).
-// ytmdl si appoggia a ffmpeg per la conversione: gli passiamo la cartella
-// di ffmpeg-static nel PATH cosi lo trova anche se non e' installato a livello di sistema.
-function runYtmdl(url, songNameHint, outDir, fileBaseName) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-q",                 // non chiedere conferme, prendi il primo risultato
-      "-o", outDir,         // cartella di output
-      "--filename", fileBaseName,
-      "--url", url,         // link diretto da scaricare (bypassa la ricerca per l'audio)
-      songNameHint || url,  // usato solo per i metadati/tag
-    ];
-
-    const child = spawn("ytmdl", args, {
-      env: {
-        ...process.env,
-        PATH: `${path.dirname(ffmpegPath)}${path.delimiter}${process.env.PATH || ""}`,
-      },
-    });
-
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("ytmdl: timeout (60s) superato."));
-    }, 60000);
-
-    child.stderr.on("data", (d) => { stderr += d.toString(); });
-    child.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(new Error("ytmdl non disponibile sul server: " + err.message));
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      if (code !== 0) {
-        return reject(new Error(`ytmdl fallito (exit ${code}): ${stderr.slice(-400)}`));
-      }
-      resolve();
-    });
-  });
-}
-
-async function downloadWithYtmdlFallback(link) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ytmdl-"));
-  const fileBase = `track_${Date.now()}`;
-  try {
-    await runYtmdl(link, null, tmpDir, fileBase);
-
-    const files = fs.readdirSync(tmpDir).filter((f) => f.toLowerCase().endsWith(".mp3"));
-    if (files.length === 0) throw new Error("ytmdl non ha prodotto alcun file mp3.");
-
-    const filePath = path.join(tmpDir, files[0]);
-    const buffer = fs.readFileSync(filePath);
-    const audioUrl = await uploadAudio(buffer, `${Date.now()}_ytmdl.mp3`);
-
-    return {
-      source: "file",
-      audioUrl,
-      title: files[0].replace(/\.mp3$/i, ""),
-      artist: "Web Radio",
-    };
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-}
-
-// --- ENRICHMENT: copertina album + info artista, con fallback a catena ---
-// Nessuna delle fonti sotto richiede una API key (tranne Last.fm, opzionale
-// se imposti la env var LASTFM_API_KEY su Render).
-const enrichCache = new Map(); // key: "title|artist" -> { data, ts }
-const ENRICH_CACHE_TTL = 1000 * 60 * 60 * 6; // 6 ore
-const MB_USER_AGENT = "ch1noFM/1.0 (webradio tra amici)";
-
-function cacheGet(key) {
-  const hit = enrichCache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.ts > ENRICH_CACHE_TTL) { enrichCache.delete(key); return null; }
-  return hit.data;
-}
-function cacheSet(key, data) {
-  enrichCache.set(key, { data, ts: Date.now() });
-  if (enrichCache.size > 500) {
-    const oldestKey = enrichCache.keys().next().value;
-    enrichCache.delete(oldestKey);
-  }
-}
-
-// --- Copertina + ARTISTA CANONICO: iTunes -> Deezer -> MusicBrainz/CoverArtArchive ---
-// Ogni fonte restituisce anche il nome artista che LEI ha trovato per quel brano:
-// e' molto piu' affidabile del nome canale YouTube (che spesso e' un reupload/freebooter).
-async function trackFromItunes(title, artist) {
-  const term = `${artist || ""} ${title}`.trim();
-  const { data } = await axios.get("https://itunes.apple.com/search", {
-    params: { term, entity: "song", limit: 1 },
-    timeout: 6000,
-  });
-  const hit = data.results && data.results[0];
-  if (!hit) return null;
-  return {
-    cover: hit.artworkUrl100 ? hit.artworkUrl100.replace("100x100bb", "600x600bb") : null,
-    artist: hit.artistName || null,
-  };
-}
-
-async function trackFromDeezer(title, artist) {
-  const q = `${artist || ""} ${title}`.trim();
-  const { data } = await axios.get("https://api.deezer.com/search", {
-    params: { q },
-    timeout: 6000,
-  });
-  const hit = data.data && data.data[0];
-  if (!hit) return null;
-  return {
-    cover: hit.album && (hit.album.cover_xl || hit.album.cover_big || hit.album.cover_medium),
-    artist: hit.artist && hit.artist.name,
-  };
-}
-
-async function trackFromMusicBrainz(title, artist) {
-  const query = artist ? `recording:"${title}" AND artist:"${artist}"` : `recording:"${title}"`;
-  const { data } = await axios.get("https://musicbrainz.org/ws/2/recording/", {
-    params: { query, fmt: "json", limit: 1 },
-    headers: { "User-Agent": MB_USER_AGENT },
-    timeout: 7000,
-  });
-  const rec = data.recordings && data.recordings[0];
-  if (!rec) return null;
-
-  const canonicalArtist = rec["artist-credit"] && rec["artist-credit"].map((c) => c.name).join(" & ");
-  const releaseId = rec.releases && rec.releases[0] && rec.releases[0].id;
-
-  let cover = null;
-  if (releaseId) {
-    try {
-      const artUrl = `https://coverartarchive.org/release/${releaseId}/front-500`;
-      await axios.head(artUrl, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
-      cover = artUrl;
-    } catch (e) { /* nessuna cover su Cover Art Archive per questa release */ }
-  }
-
-  return { cover, artist: canonicalArtist || null };
-}
-
-// Restituisce { cover, canonicalArtist } usando la prima fonte che da' un risultato utile,
-// per una data coppia (title, artist).
-async function findCoverArtOnce(title, artist) {
-  const sources = [trackFromItunes, trackFromDeezer, trackFromMusicBrainz];
-  let cover = null;
-  let canonicalArtist = null;
-
-  for (const source of sources) {
-    try {
-      const hit = await source(title, artist);
-      if (hit) {
-        if (!cover && hit.cover) cover = hit.cover;
-        if (!canonicalArtist && hit.artist) canonicalArtist = hit.artist;
-      }
-    } catch (e) {
-      console.warn(`[track:${source.name}] fallito:`, e.message);
-    }
-    if (cover && canonicalArtist) break;
-  }
-
-  return { cover, canonicalArtist };
-}
-
-function stripFeaturedArtist(artist) {
-  if (!artist) return artist;
-  const m = artist.match(/^(.*?)\s*(?:ft\.?|feat\.?|featuring)\s+.+$/i);
-  return m ? m[1].trim() : artist;
-}
-
-// Molti reupload/freebooter mettono il titolo del video in ordine "Titolo - Artista"
-// invece di "Artista - Titolo" (o viceversa), quindi non ci si puo' fidare ciecamente
-// dell'ordine che abbiamo indovinato. Proviamo piu' combinazioni finche' una non da'
-// un risultato, e ci fidiamo del nome artista restituito dal provider (non del nostro).
-async function findCoverArt(title, artist) {
-  const primaryArtist = stripFeaturedArtist(artist);
-  const attempts = [];
-  if (primaryArtist && primaryArtist !== artist) attempts.push([title, primaryArtist]);
-  if (title || artist) attempts.push([title, artist]);
-  if (title && artist) attempts.push([artist, title]); // ordine invertito
-  if (title) attempts.push([title, null]); // solo titolo, nessun bias sull'artista
-
-  for (const [t, a] of attempts) {
-    const hit = await findCoverArtOnce(t, a).catch(() => ({ cover: null, canonicalArtist: null }));
-    if (hit.cover || hit.canonicalArtist) return hit;
-  }
-  return { cover: null, canonicalArtist: null };
-}
-
-// --- Artista: Wikipedia (bio + foto) -> Deezer (foto) -> Last.fm opzionale ---
-async function artistFromWikipedia(artist, lang) {
-  const url = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(artist)}`;
-  const { data } = await axios.get(url, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
-  if (!data || data.type === "disambiguation") return null;
-  return {
-    bio: data.extract || null,
-    photo: (data.thumbnail && data.thumbnail.source) || (data.originalimage && data.originalimage.source) || null,
-    name: data.title || artist,
-  };
-}
-
-async function artistFromDeezer(artist) {
-  const { data } = await axios.get("https://api.deezer.com/search/artist", {
-    params: { q: artist },
-    timeout: 6000,
-  });
-  const hit = data.data && data.data[0];
-  if (!hit) return null;
-  return { bio: null, photo: hit.picture_xl || hit.picture_big || hit.picture_medium || null, name: hit.name };
-}
-
-async function artistFromLastfm(artist) {
-  const apiKey = process.env.LASTFM_API_KEY;
-  if (!apiKey) return null;
-  const { data } = await axios.get("https://ws.audioscrobbler.com/2.0/", {
-    params: { method: "artist.getinfo", artist, api_key: apiKey, format: "json" },
-    timeout: 6000,
-  });
-  if (!data || !data.artist) return null;
-  const bioRaw = data.artist.bio && data.artist.bio.summary;
-  const bio = bioRaw ? bioRaw.replace(/<a[^>]*>.*?<\/a>/g, "").trim() : null;
-  return { bio, photo: null, name: data.artist.name || artist };
-}
-
-async function findArtistInfo(artist) {
-  if (!artist) return { bio: null, photo: null, name: null };
-
-  let result = { bio: null, photo: null, name: artist };
-
-  // Last.fm per primo: e' l'unica fonte che ha pagine dedicate alle collaborazioni
-  // (es. "Freddie Gibbs & Madlib"), che Wikipedia di solito non ha come pagina a se'.
-  // Se LASTFM_API_KEY non e' impostata, questa fonte viene semplicemente saltata.
-  const bioSources = [
-    () => artistFromLastfm(artist),
-    () => artistFromWikipedia(artist, "it"),
-    () => artistFromWikipedia(artist, "en"),
-  ];
-  for (const source of bioSources) {
-    try {
-      const info = await source();
-      if (info && info.bio) { result.bio = info.bio; result.name = info.name || result.name; }
-      if (info && info.photo && !result.photo) result.photo = info.photo;
-      if (result.bio && result.photo) break;
-    } catch (e) {
-      console.warn("[artistBio] fallito:", e.message);
-    }
-  }
-
-  // Foto: se ancora mancante, prova Deezer
-  if (!result.photo) {
-    try {
-      const info = await artistFromDeezer(artist);
-      if (info && info.photo) result.photo = info.photo;
-    } catch (e) {
-      console.warn("[artistPhoto:deezer] fallito:", e.message);
-    }
-  }
-
-  return result;
-}
-
-app.get("/enrich", async (req, res) => {
-  const title = (req.query.title || "").toString().trim();
-  const artist = (req.query.artist || "").toString().trim();
-  const coverHint = (req.query.coverHint || "").toString().trim() || null;
-  if (!title && !artist) return res.status(400).json({ error: "title o artist mancanti." });
-
-  const cacheKey = `${title}|${artist}|${coverHint || ""}`;
-  const cached = cacheGet(cacheKey);
-  if (cached) return res.json(cached);
-
-  try {
-    // FASE 1: troviamo la copertina e, soprattutto, l'artista "vero" del brano
-    // (non il nome del canale YouTube che l'ha ripubblicato).
-    const { cover, canonicalArtist } = await findCoverArt(title, artist).catch(() => ({ cover: null, canonicalArtist: null }));
-    const resolvedArtist = canonicalArtist || artist || null;
-
-    // FASE 2: bio + foto artista. Per la bio togliamo eventuali "Ft. X" (l'artista
-    // ospite non ha una pagina bio a se' stante), ma lasciamo intatte le collab vere
-    // e proprie tipo "A & B" (es. Freddie Gibbs & Madlib), che Last.fm gestisce bene.
-    const bioSearchArtist = stripFeaturedArtist(resolvedArtist);
-    const artistInfo = await findArtistInfo(bioSearchArtist).catch(() => ({ bio: null, photo: null, name: resolvedArtist }));
-
-    const result = {
-      cover: coverHint || cover || null,
-      artistName: artistInfo.name || resolvedArtist || null,
-      artistBio: artistInfo.bio || null,
-      artistPhoto: artistInfo.photo || null,
-    };
-
-    cacheSet(cacheKey, result);
-    res.json(result);
-  } catch (err) {
-    console.error("[Errore /enrich]:", err.message);
-    res.status(500).json({ error: "Enrichment fallito: " + err.message });
-  }
-});
-
-// --- ROUTE PRINCIPALE /DOWNLOAD ---
-app.post("/download", async (req, res) => {
-  const { url: link } = req.body || {};
-  if (!link) return res.status(400).json({ error: "URL mancante." });
-
-  const cleanLink = link.trim();
-
-  // CASO 1: TYPETYPE VIDEO
-  if (cleanLink.includes("typetype")) {
-    try {
-      const { buffer, title } = await downloadFromTypeType(cleanLink);
-      const audioUrl = await uploadAudio(buffer, `${Date.now()}_typetype.m4a`);
-
-      return res.json({
-        source: "file",
-        audioUrl,
-        title: title || "Traccia TypeType",
-        artist: "TypeType Video",
-      });
-    } catch (err) {
-      console.error("[Errore TypeType]:", err.message);
-      return res.status(500).json({ error: "Download TypeType fallito: " + err.message });
-    }
-  }
-
-  // CASO 2: YOUTUBE -> niente download, solo ID + metadati.
-  if (
-    cleanLink.includes("youtube.com") ||
-    cleanLink.includes("youtu.be") ||
-    cleanLink.includes("music.youtube.com")
-  ) {
-    const videoId = getYouTubeId(cleanLink);
-    if (!videoId) {
-      return res.status(400).json({ error: "URL YouTube non valido (impossibile estrarre il video ID)." });
-    }
-
-    const meta = await getYouTubeMeta(videoId, cleanLink);
-
-    return res.json({
-      source: "youtube",
-      youtubeId: videoId,
-      title: meta.title,
-      artist: meta.artist,
-      startedAt: Date.now(),
-    });
-  }
-
-  // CASO 2.5: SPOTIFY -> non scaricabile direttamente (protetto), risolviamo i
-  // metadati (titolo/artista/cover) dalla pagina pubblica e cerchiamo l'audio
-  // equivalente su YouTube. Non passa da yt-dlp diretto ne' da ytmdl (che si
-  // aspetta un link YouTube), quindi ha una route sua.
-  if (cleanLink.includes("open.spotify.com")) {
-    const spotifyOutputFile = path.join(os.tmpdir(), `spotify_${Date.now()}.mp3`);
-    try {
-      const spotifyMeta = await resolveSpotifyTrack(cleanLink);
-      const videoInfo = await downloadSpotifyViaYouTubeSearch(spotifyMeta, spotifyOutputFile);
-
-      const audioBuffer = fs.readFileSync(spotifyOutputFile);
-      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_spotify.mp3`);
-
-      return res.json({
-        source: "file",
-        audioUrl,
-        title: spotifyMeta.title,
-        artist: spotifyMeta.artist || videoInfo.uploader || "Spotify",
-        // La cover di Spotify e' quasi sempre affidabile: la passiamo come suggerimento
-        // cosi' /enrich puo' usarla senza dover cercare altrove.
-        coverHint: spotifyMeta.cover || null,
-      });
-    } catch (err) {
-      console.error("[Errore Spotify]:", err.message);
-      return res.status(500).json({
-        error: "Download da Spotify fallito (a volte non si trova un audio equivalente su YouTube): " + err.message,
-      });
-    } finally {
-      if (fs.existsSync(spotifyOutputFile)) fs.unlinkSync(spotifyOutputFile);
-    }
-  }
-
-  // CASO 3: ALTRI SITI (yt-dlp, con fallback su ytmdl se fallisce)
-  const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
-  try {
-    let videoInfo;
-    try {
-      const info = await ytDlp(cleanLink, withCookies({
-        dumpSingleJson: true,
-        noWarnings: true,
-        noPlaylist: true,
-        format: "bestaudio/best",
-        defaultSearch: "ytsearch1:",
-      }));
-      videoInfo = info.entries ? info.entries[0] : info;
-
-      await ytDlp(cleanLink, withCookies({
-        extractAudio: true,
-        audioFormat: "mp3",
-        output: outputFile,
-        ffmpegLocation: ffmpegPath,
-        noPlaylist: true,
-        format: "bestaudio/best",
-        defaultSearch: "ytsearch1:",
-      }));
-
-      const audioBuffer = fs.readFileSync(outputFile);
-      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}.mp3`);
-
-      return res.json({
-        source: "file",
-        audioUrl,
-        title: videoInfo.title || "Traccia sconosciuta",
-        artist: videoInfo.uploader || videoInfo.artist || "Web Radio",
-      });
-    } catch (ytDlpErr) {
-      console.warn("[yt-dlp fallito, provo ytmdl]:", ytDlpErr.message);
-      try {
-        const fallbackResult = await downloadWithYtmdlFallback(cleanLink);
-        return res.json(fallbackResult);
-      } catch (ytmdlErr) {
-        console.error("[Anche ytmdl fallito]:", ytmdlErr.message);
-        throw new Error(
-          `yt-dlp: ${ytDlpErr.stderr || ytDlpErr.message} | ytmdl: ${ytmdlErr.message}`
-        );
-      }
-    }
-  } catch (err) {
-    console.error("[Errore download Generico]:", err.message);
-    return res.status(500).json({ error: "Download fallito: " + err.message });
-  } finally {
-    if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-  }
-});
-
-// --- ROUTE PER UPLOAD LOCALE DI FILE ---
-app.post("/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Nessun file ricevuto." });
-
-  try {
-    const safeName = `${Date.now()}_${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const audioUrl = await uploadAudio(req.file.buffer, safeName);
-
-    res.json({
-      source: "file",
-      audioUrl,
-      title: req.file.originalname.replace(/\.[^/.]+$/, ""),
-      artist: "Upload Locale",
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Upload fallito: " + err.message });
-  }
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server attivo sulla porta ${PORT}`));
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ch1noFM — Web Radio</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
+    <style>
+        :root {
+            --bg: #0a0c10;
+            --bg-panel: #12151b;
+            --bg-panel-2: #181c24;
+            --bg-inset: #0e1116;
+            --border: #242a35;
+            --border-soft: #1b202a;
+            --text: #ece8df;
+            --text-dim: #9096a3;
+            --text-faint: #565c6a;
+            --accent: #ff8a3d;
+            --accent-soft: rgba(255, 138, 61, 0.14);
+            --accent-2: #f2c14e;
+            --danger: #e05a52;
+            --ok: #52c78f;
+            --radius-lg: 18px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+            --font-display: 'Fraunces', Georgia, serif;
+            --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background:
+                radial-gradient(1100px 500px at 50% -10%, rgba(255, 138, 61, 0.09), transparent 60%),
+                var(--bg);
+            color: var(--text);
+            font-family: var(--font-mono);
+            display: flex;
+            justify-content: center;
+            padding: 28px 16px 60px;
+            min-height: 100vh;
+        }
+
+        .page { width: 100%; max-width: 980px; display: flex; flex-direction: column; gap: 18px; }
+
+        .station-header { display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px 2px; }
+        .station-name { font-family: var(--font-display); font-weight: 900; font-size: 1.7rem; letter-spacing: -0.02em; color: var(--text); }
+        .station-name span { color: var(--accent); }
+        .station-tag { font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
+
+        /* ---------- Bacheca (header board) ---------- */
+        .board {
+            background: repeating-linear-gradient(180deg, var(--bg-panel) 0px, var(--bg-panel) 27px, var(--border-soft) 28px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px 18px;
+            min-height: 58px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .board-pin { font-size: 0.9rem; flex-shrink: 0; opacity: 0.8; }
+        .board-content {
+            flex: 1;
+            font-size: 0.82rem;
+            color: var(--text-dim);
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.5;
+        }
+        .board-content.is-empty { color: var(--text-faint); font-style: italic; }
+        .board-edit-btn {
+            flex-shrink: 0; background: transparent; border: 1px solid var(--border);
+            color: var(--text-faint); font-family: var(--font-mono); font-size: 0.68rem;
+            text-transform: uppercase; letter-spacing: 0.08em; padding: 6px 10px;
+            border-radius: var(--radius-sm); cursor: pointer; transition: color 0.15s, border-color 0.15s;
+        }
+        .board-edit-btn:hover { color: var(--accent); border-color: var(--accent); }
+        .board-editor { display: none; flex: 1; gap: 10px; align-items: flex-start; }
+        .board-editor.active { display: flex; }
+        .board-editor textarea {
+            flex: 1; background: var(--bg-inset); border: 1px solid var(--border); color: var(--text);
+            font-family: var(--font-mono); font-size: 0.82rem; padding: 8px 10px; border-radius: var(--radius-sm);
+            resize: vertical; min-height: 44px; outline: none;
+        }
+        .board-editor textarea:focus { border-color: var(--accent); }
+        .board-save-btn {
+            background: var(--accent); color: #1a0e05; border: none; padding: 8px 14px;
+            border-radius: var(--radius-sm); font-family: var(--font-mono); font-weight: 700;
+            font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer;
+        }
+
+        /* ---------- Layout ---------- */
+        .layout { display: grid; grid-template-columns: 1fr 300px; gap: 18px; align-items: start; }
+        .main-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+        .side-col { display: flex; flex-direction: column; gap: 18px; }
+
+        @media (max-width: 800px) {
+            .layout { grid-template-columns: 1fr; }
+            .side-col { order: -1; }
+        }
+
+        /* ---------- Cards ---------- */
+        .player-card, .queue-card, .request-card, .artist-card {
+            background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-panel-2) 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 26px;
+            position: relative;
+        }
+        .player-card { box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255,255,255,0.02); }
+
+        .card-label {
+            font-size: 0.68rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+            color: var(--text-faint); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
+        }
+        .card-label::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+
+        .on-air {
+            display: inline-flex; align-items: center; gap: 7px;
+            background: var(--accent-soft); border: 1px solid rgba(255, 138, 61, 0.35);
+            color: var(--accent); padding: 5px 13px; border-radius: 999px;
+            font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+            margin-bottom: 22px;
+        }
+        .on-air .lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: blink 1.6s ease-in-out infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+        .platter { display: flex; justify-content: center; margin-bottom: 20px; position: relative; }
+        .vinyl {
+            width: 176px; height: 176px; border-radius: 50%;
+            background: repeating-radial-gradient(circle at center, #1a1d24 0px, #1a1d24 2px, #111318 3px, #111318 4px);
+            border: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: center;
+            animation: spin 9s linear infinite;
+            animation-play-state: paused;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.5);
+        .cover-frame-wrap { display: flex; justify-content: center; margin-bottom: 20px; }
+        .cover-frame {
+            width: 190px; height: 190px; border-radius: 22px; overflow: hidden;
+            position: relative; border: 1px solid var(--border);
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+            transition: box-shadow 0.5s ease, transform 0.5s ease;
+        }
+        body.is-playing .vinyl { animation-play-state: running; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .album-cover {
+            width: 82px; height: 82px; border-radius: 50%; object-fit: cover;
+            border: 3px solid var(--bg-inset); box-shadow: 0 0 0 1px var(--border-soft);
+        body.is-playing .cover-frame {
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55), 0 0 0 3px var(--accent-soft), 0 0 44px rgba(255, 138, 61, 0.28);
+        }
+        .platter::after {
+            content: ''; position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
+            background: var(--bg); border: 2px solid var(--accent); border-radius: 50%;
+            transform: translate(-50%, -50%);
+        .album-cover { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .cover-frame::after {
+            /* sottile riflesso in alto, da' un po' di profondità senza essere invadente */
+            content: ''; position: absolute; inset: 0;
+            background: linear-gradient(160deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 35%);
+            pointer-events: none;
+        }
+
+        .song-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; color: #fff; text-align: center; margin-bottom: 4px; word-break: break-word; line-height: 1.2; }
+        .song-artist { font-size: 0.82rem; color: var(--text-dim); text-align: center; margin-bottom: 18px; letter-spacing: 0.01em; }
+
+        /* ---------- Waveform ("wave candy" style progress) ---------- */
+        .waveform { display: flex; align-items: center; gap: 1.5px; height: 40px; margin-bottom: 16px; }
+        .waveform .bar {
+            flex: 1; min-width: 2px; background: var(--border); border-radius: 2px;
+            transition: background 0.2s ease, opacity 0.2s ease;
+        }
+        .waveform .bar.played { background: var(--accent); }
+        body.is-playing .waveform .bar.played:nth-child(3n) { animation: kick 0.9s ease-in-out infinite; }
+        body.is-playing .waveform .bar.played:nth-child(3n+1) { animation: kick 0.9s ease-in-out infinite 0.15s; }
+        @keyframes kick { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+        .waveform-time { display: flex; justify-content: space-between; font-size: 0.66rem; color: var(--text-faint); margin-bottom: 18px; letter-spacing: 0.03em; }
+
+        .requested-by {
+            font-size: 0.72rem; color: var(--text-faint); background: var(--bg-inset);
+            border: 1px solid var(--border-soft); padding: 6px 14px; border-radius: var(--radius-sm);
+            display: block; width: fit-content; margin: 0 auto 20px;
+        }
+        .requested-by b { color: var(--text-dim); font-weight: 600; }
+
+        audio { display: none; }
+
+        .controls-row { display: flex; gap: 10px; }
+        .start-audio-btn, .skip-btn {
+            border: none; padding: 13px 16px; border-radius: var(--radius-sm);
+            font-family: var(--font-mono); font-weight: 700; font-size: 0.78rem;
+            letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer;
+            transition: transform 0.15s ease, filter 0.15s ease;
+        }
+        .start-audio-btn:hover, .skip-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
+        .start-audio-btn { flex: 1.4; background: var(--accent); color: #1a0e05; }
+        .start-audio-btn.is-ready { background: var(--ok); color: #06251a; }
+        .skip-btn { flex: 1; background: var(--bg-inset); color: var(--text-dim); border: 1px solid var(--border); }
+        .skip-btn:hover { color: var(--danger); border-color: var(--danger); }
+
+        /* ---------- Queue ---------- */
+        .queue-list { list-style: none; display: flex; flex-direction: column; gap: 7px; max-height: 220px; overflow-y: auto; }
+        .queue-item {
+            background: var(--bg-inset); border: 1px solid var(--border-soft);
+            padding: 10px 14px; border-radius: var(--radius-sm);
+            display: flex; align-items: center; gap: 10px; font-size: 0.82rem;
+        }
+        .queue-item .idx { color: var(--accent); font-weight: 700; min-width: 22px; }
+        .queue-item .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+        .queue-item .meta .artist { color: var(--text-faint); }
+        .queue-empty { color: var(--text-faint); font-size: 0.8rem; text-align: center; padding: 14px 0; }
+
+        /* ---------- Request form ---------- */
+        .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+        label { font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+        input[type="text"], input[type="file"] {
+            background: var(--bg-inset); border: 1px solid var(--border); color: var(--text);
+            padding: 11px 12px; border-radius: var(--radius-sm); font-size: 0.85rem;
+            font-family: var(--font-mono); outline: none; transition: border-color 0.15s ease;
+        }
+        input[type="text"]:focus { border-color: var(--accent); }
+        input[type="file"] { font-size: 0.78rem; }
+        .or-divider { text-align: center; color: var(--text-faint); font-size: 0.72rem; margin: 4px 0 12px; text-transform: uppercase; letter-spacing: 0.1em; }
+        .submit-btn {
+            background: var(--accent); color: #1a0e05; border: none; padding: 13px;
+            border-radius: var(--radius-sm); font-family: var(--font-mono); font-weight: 700;
+            font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; width: 100%;
+            transition: filter 0.15s ease, transform 0.15s ease;
+        }
+        .submit-btn:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
+        .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        #status-msg { margin-top: 10px; font-size: 0.78rem; text-align: center; min-height: 1em; }
+
+        /* ---------- Artist card ---------- */
+        .artist-card { display: flex; flex-direction: column; align-items: center; text-align: center; }
+        .artist-photo-wrap {
+            width: 100%; aspect-ratio: 1 / 1; border-radius: var(--radius-md); overflow: hidden;
+            background: var(--bg-inset); border: 1px solid var(--border-soft); margin-bottom: 14px;
+        }
+        .artist-photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .artist-name { font-family: var(--font-display); font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
+        .artist-bio { font-size: 0.76rem; color: var(--text-dim); line-height: 1.55; text-align: left; }
+        .artist-bio.is-empty { color: var(--text-faint); font-style: italic; text-align: center; }
+        .artist-source { font-size: 0.62rem; color: var(--text-faint); margin-top: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        @media (max-width: 420px) {
+            .player-card, .queue-card, .request-card, .artist-card { padding: 20px; }
+            .vinyl { width: 148px; height: 148px; }
+            .cover-frame { width: 150px; height: 150px; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .vinyl, .on-air .lamp, .waveform .bar { animation: none !important; }
+            .on-air .lamp, .waveform .bar { animation: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="page">
+
+        <div class="station-header">
+            <div class="station-name">ch1no<span>FM</span></div>
+            <div class="station-tag">Radio tra amici</div>
+        </div>
+
+        <div class="board">
+            <div class="board-pin">📌</div>
+            <div class="board-content is-empty" id="board-content">La bacheca è vuota.</div>
+            <div class="board-editor" id="board-editor">
+                <textarea id="board-textarea" placeholder="Scrivi qualcosa per tutti..."></textarea>
+                <button class="board-save-btn" id="board-save-btn">Salva</button>
+            </div>
+            <button class="board-edit-btn" id="board-edit-btn">✏️ Modifica</button>
+        </div>
+
+        <div class="layout">
+            <div class="main-col">
+
+                <div class="player-card">
+                    <div class="on-air"><span class="lamp"></span> On air</div>
+
+                    <div class="platter">
+                        <div class="vinyl" id="vinyl">
+                            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB" alt="Cover">
+                    <div class="cover-frame-wrap">
+                        <div class="cover-frame">
+                            <img id="album-cover" class="album-cover" src="https://via.placeholder.com/380/12151b/565c6a?text=%E2%99%AB" alt="Cover">
+                        </div>
+                    </div>
+
+                    <div id="song-title" class="song-title">In attesa di brani...</div>
+                    <div id="song-artist" class="song-artist">Radio online</div>
+
+                    <div class="waveform" id="waveform" aria-hidden="true"></div>
+                    <div class="waveform-time">
+                        <span id="time-current">0:00</span>
+                        <span id="time-total">--:--</span>
+                    </div>
+
+                    <div style="text-align:center;">
+                        <div class="requested-by">richiesta da <b id="requested-by">—</b></div>
+                    </div>
+
+                    <audio id="radio-player" autoplay></audio>
+
+                    <div class="controls-row">
+                        <button class="start-audio-btn" id="enable-audio-btn">🔊 Avvia stream</button>
+                        <button class="skip-btn" onclick="forceSkip()">⏭️ Skip</button>
+                    </div>
+                </div>
+
+                <div class="queue-card">
+                    <div class="card-label">Coda brani</div>
+                    <ul id="queue-list" class="queue-list">
+                        <li class="queue-empty">La coda è vuota.</li>
+                    </ul>
+                </div>
+
+                <div class="request-card">
+                    <div class="card-label">Richiedi un brano</div>
+                    <div class="form-group">
+                        <label>Link YouTube o URL MP3 diretto</label>
+                        <input type="text" id="song-link" placeholder="Incolla URL YouTube o MP3...">
+                    </div>
+                    <div class="or-divider">oppure</div>
+                    <div class="form-group">
+                        <label>Carica file audio da PC (MP3, WAV)</label>
+                        <input type="file" id="file-input" accept="audio/*">
+                    </div>
+                    <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in coda</button>
+                    <div id="status-msg"></div>
+                </div>
+
+            </div>
+
+            <div class="side-col">
+                <div class="artist-card">
+                    <div class="artist-photo-wrap">
+                        <img id="artist-photo" src="https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB" alt="Artista">
+                    </div>
+                    <div class="artist-name" id="artist-name">—</div>
+                    <div class="artist-bio is-empty" id="artist-bio">Nessun brano in riproduzione.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="youtube-radio.js"></script>
+
+    <script>
+        // --- CONFIGURAZIONE SUPABASE ---
+        const SUPABASE_URL = "https://vpkpyepszskgustruoyl.supabase.co";
+        const SUPABASE_ANON_KEY = "sb_publishable__C7yHVyoeO0EAEOKOnSnLw_ebv3Zpp2";
+        const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        let userId = localStorage.getItem("radio_uid") || "User_" + Math.floor(Math.random() * 8999 + 1000);
+        localStorage.setItem("radio_uid", userId);
+
+        const BACKEND_URL = "https://ch1nofm.onrender.com";
+
+        // ================= WAVEFORM =================
+        const WAVE_BAR_COUNT = 56;
+        let waveDuration = 0;
+        let ytPollTimer = null;
+
+        function hashStr(str) {
+            let h = 0;
+            for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+            return h;
+        }
+        function seededRandom(seed) {
+            let s = seed >>> 0;
+            return function () {
+                s |= 0; s = (s + 0x6D2B79F5) | 0;
+                let t = Math.imul(s ^ (s >>> 15), 1 | s);
+                t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+        function buildWaveform(seedStr) {
+            const rand = seededRandom(hashStr(seedStr || 'ch1noFM'));
+            const el = document.getElementById('waveform');
+            el.innerHTML = '';
+            for (let i = 0; i < WAVE_BAR_COUNT; i++) {
+                const isKick = i % 4 === 0 || rand() > 0.82;
+                const h = isKick ? 45 + rand() * 55 : 12 + rand() * 30;
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.style.height = Math.round(h) + '%';
+                el.appendChild(bar);
+            }
+        }
+        function formatTime(sec) {
+            if (!isFinite(sec) || sec < 0) return '--:--';
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60);
+            return m + ':' + String(s).padStart(2, '0');
+        }
+        function updateWaveformProgress(currentTime, duration) {
+            document.getElementById('time-current').innerText = formatTime(currentTime);
+            document.getElementById('time-total').innerText = duration > 0 ? formatTime(duration) : '--:--';
+            if (!duration || duration <= 0) return;
+            const fraction = Math.min(1, Math.max(0, currentTime / duration));
+            const playedCount = Math.round(fraction * WAVE_BAR_COUNT);
+            const bars = document.getElementById('waveform').children;
+            for (let i = 0; i < bars.length; i++) {
+                bars[i].classList.toggle('played', i < playedCount);
+            }
+        }
+        function stopYtPolling() {
+            if (ytPollTimer) { clearInterval(ytPollTimer); ytPollTimer = null; }
+        }
+        function startYtPolling() {
+            stopYtPolling();
+            ytPollTimer = setInterval(() => {
+                if (!window.ChinoFMYouTube) return;
+                const ct = window.ChinoFMYouTube.getCurrentTime();
+                const dur = window.ChinoFMYouTube.getDuration();
+                if (dur > 0) updateWaveformProgress(ct, dur);
+            }, 500);
+        }
+
+        // ================= STATO RIPRODUZIONE (vinile + VU) =================
+        // ================= STATO RIPRODUZIONE (copertina + VU) =================
+        function setPlayingState(isPlaying) {
+            document.body.classList.toggle('is-playing', !!isPlaying);
+        }
+
+        // ================= AUTO-ADVANCE: radio vera, niente skip manuale =================
+        // Tutti i client ascoltano la fine del brano e chiamano advanceQueue().
+        // Un piccolo ritardo casuale riduce (ma non azzera del tutto) la possibilità
+        // che due client tentino di avanzare nello stesso istante: se succede non è
+        // comunque un problema serio, nel peggiore dei casi lo start_time del prossimo
+        // brano si aggiorna due volte a distanza di pochi millisecondi.
+        let autoAdvanceLock = false;
+        function autoAdvance() {
+            if (autoAdvanceLock) return;
+            autoAdvanceLock = true;
+            const jitter = Math.random() * 700;
+            setTimeout(() => {
+                advanceQueue().finally(() => { autoAdvanceLock = false; });
+            }, jitter);
+        }
+
+        window.addEventListener('chinofm:ytstate', (e) => {
+            setPlayingState(e.detail && e.detail.state === 1);
+            const state = e.detail && e.detail.state;
+            setPlayingState(state === 1);
+            if (state === 0) autoAdvance(); // 0 = YT.PlayerState.ENDED
+        });
+
+        // ================= BACHECA =================
+        const boardContentEl = document.getElementById('board-content');
+        const boardEditorEl = document.getElementById('board-editor');
+        const boardTextareaEl = document.getElementById('board-textarea');
+        const boardEditBtn = document.getElementById('board-edit-btn');
+        const boardSaveBtn = document.getElementById('board-save-btn');
+
+        function renderBoard(content) {
+            if (content && content.trim()) {
+                boardContentEl.innerText = content;
+                boardContentEl.classList.remove('is-empty');
+            } else {
+                boardContentEl.innerText = 'La bacheca è vuota.';
+                boardContentEl.classList.add('is-empty');
+            }
+        }
+
+        async function loadBoard() {
+            const { data, error } = await sb.from('board').select('content').eq('id', 'main').maybeSingle();
+            if (error) { console.warn('Bacheca non disponibile (tabella "board" creata?):', error.message); return; }
+            renderBoard(data ? data.content : '');
+        }
+
+        boardEditBtn.addEventListener('click', () => {
+            boardTextareaEl.value = boardContentEl.classList.contains('is-empty') ? '' : boardContentEl.innerText;
+            boardEditorEl.classList.add('active');
+            boardContentEl.style.display = 'none';
+            boardEditBtn.style.display = 'none';
+            boardTextareaEl.focus();
+        });
+
+        boardSaveBtn.addEventListener('click', async () => {
+            const content = boardTextareaEl.value;
+            boardSaveBtn.disabled = true;
+            const { error } = await sb.from('board').upsert({ id: 'main', content, updated_at: new Date().toISOString() });
+            boardSaveBtn.disabled = false;
+            if (error) { alert('Errore salvataggio bacheca: ' + error.message); return; }
+            renderBoard(content);
+            boardEditorEl.classList.remove('active');
+            boardContentEl.style.display = '';
+            boardEditBtn.style.display = '';
+        });
+
+        sb.channel('board-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'board' }, loadBoard)
+            .subscribe();
+        loadBoard();
+
+        // ================= SCHEDA ARTISTA + COVER (via backend /enrich) =================
+        let enrichSeq = 0;
+        async function loadEnrichment(title, artist) {
+        async function loadEnrichment(title, artist, coverHint) {
+            const seq = ++enrichSeq;
+            const artistNameEl = document.getElementById('artist-name');
+            const artistBioEl = document.getElementById('artist-bio');
+            const artistPhotoEl = document.getElementById('artist-photo');
+            const songArtistEl = document.getElementById('song-artist');
+
+            artistNameEl.innerText = artist || '—';
+            artistBioEl.innerText = 'Cerco informazioni...';
+            artistBioEl.classList.add('is-empty');
+            if (coverHint) document.getElementById('album-cover').src = coverHint;
+
+            try {
+                const url = `${BACKEND_URL}/enrich?title=${encodeURIComponent(title || '')}&artist=${encodeURIComponent(artist || '')}`;
+                let url = `${BACKEND_URL}/enrich?title=${encodeURIComponent(title || '')}&artist=${encodeURIComponent(artist || '')}`;
+                if (coverHint) url += `&coverHint=${encodeURIComponent(coverHint)}`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (seq !== enrichSeq) return; // una richiesta più recente ha già preso il sopravvento
+
+                if (data.cover) document.getElementById('album-cover').src = data.cover;
+                artistPhotoEl.src = data.artistPhoto || 'https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB';
+                artistNameEl.innerText = data.artistName || artist || '—';
+                // L'artista "vero" trovato via iTunes/Deezer/MusicBrainz sostituisce
+                // eventuali nomi di canali freebooter mostrati inizialmente.
+                if (data.artistName) songArtistEl.innerText = data.artistName;
+                if (data.artistBio) {
+                    artistBioEl.innerText = data.artistBio;
+                    artistBioEl.classList.remove('is-empty');
+                } else {
+                    artistBioEl.innerText = 'Nessuna biografia trovata.';
+                    artistBioEl.classList.add('is-empty');
+                }
+            } catch (e) {
+                console.warn('Enrichment fallito:', e.message);
+                if (seq !== enrichSeq) return;
+                artistBioEl.innerText = 'Info non disponibili al momento.';
+                artistBioEl.classList.add('is-empty');
+            }
+        }
+
+        // --- Helper: normalize/extract YouTube ID from many link forms ---
+        function getYouTubeIdFromAny(url) {
+          if (!url || typeof url !== 'string') return null;
+          const s = url.trim();
+          if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+          const m = s.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+          return m ? m[1] : null;
+        }
+
+        document.getElementById('enable-audio-btn').addEventListener('click', () => {
+            const player = document.getElementById('radio-player');
+            player.play().then(() => setPlayingState(true)).catch(() => {});
+            try {
+                if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.unlock === 'function') {
+                    window.ChinoFMYouTube.unlock();
+                }
+            } catch (e) {}
+            const btn = document.getElementById("enable-audio-btn");
+            btn.innerText = "✅ Audio pronto";
+            btn.classList.add('is-ready');
+        });
+
+        async function fetchJson(url, options) {
+            let res;
+            try {
+                res = await fetch(url, options);
+            } catch (networkErr) {
+                throw new Error(
+                    "Impossibile contattare il backend (" + BACKEND_URL + "). " +
+                    "Potrebbe essere ancora in fase di avvio: riprova tra 30-60 secondi."
+                );
+            }
+            const raw = await res.text();
+            let data;
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch (parseErr) {
+                console.error("Risposta non-JSON dal backend:", raw.slice(0, 300));
+                throw new Error("Il backend ha risposto in modo inatteso (controlla i log su Render).");
+            }
+            if (!res.ok) throw new Error(data.error || `Errore backend (HTTP ${res.status})`);
+            return data;
+        }
+
+        async function requestDownload(link) {
+            return fetchJson(`${BACKEND_URL}/download`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: link })
+            });
+        }
+
+        async function requestUpload(file) {
+            const formData = new FormData();
+            formData.append("file", file);
+            return fetchJson(`${BACKEND_URL}/upload`, { method: "POST", body: formData });
+        }
+
+        async function handleFormSubmit() {
+            const statusMsg = document.getElementById("status-msg");
+            const submitBtn = document.getElementById("submit-btn");
+            const link = document.getElementById("song-link").value.trim();
+            const fileInput = document.getElementById("file-input");
+            const file = fileInput.files[0];
+
+            submitBtn.disabled = true;
+            statusMsg.style.color = "#f2c14e";
+            statusMsg.innerText = "⏳ Inserimento in corso...";
+
+            try {
+                let songData = { requestedBy: userId };
+
+                if (file) {
+                    if (file.size > 25 * 1024 * 1024) {
+                        statusMsg.style.color = "#e05a52";
+                        statusMsg.innerText = "⚠️ Il file supera i 25 MB!";
+                        submitBtn.disabled = false;
+                        return;
+                    }
+                    statusMsg.innerText = "⏫ Caricamento file in corso...";
+                    const result = await requestUpload(file);
+                    songData.type = "file";
+                    songData.audioUrl = result.audioUrl;
+                    songData.title = result.title;
+                    songData.artist = result.artist;
+                } else if (link) {
+                    statusMsg.innerText = "⏬ Elaborazione link...";
+                    const result = await requestDownload(link);
+                    if (!result || !result.source) throw new Error("Risposta backend non valida.");
+
+                    if (result.source === "youtube") {
+                        const vid = result.youtubeId;
+                        if (!vid) throw new Error("Backend non ha restituito youtubeId.");
+                        songData.type = "youtube";
+                        songData.audioUrl = `yt:${vid}`;
+                        songData.title = result.title || `YouTube ${vid}`;
+                        songData.artist = result.artist || "YouTube";
+                    } else if (result.source === "file") {
+                        songData.type = "file";
+                        songData.audioUrl = result.audioUrl;
+                        songData.title = result.title;
+                        songData.artist = result.artist;
+                        songData.coverHint = result.coverHint || null; // presente solo per i brani risolti da Spotify
+                    } else {
+                        throw new Error("Fonte non riconosciuta dal backend.");
+                    }
+                } else {
+                    statusMsg.style.color = "#e05a52";
+                    statusMsg.innerText = "⚠️ Inserisci un link o un file!";
+                    submitBtn.disabled = false;
+                    return;
+                }
+
+                const { error: insertError } = await sb.from("queue").insert({
+                    type: songData.type,
+                    title: songData.title,
+                    artist: songData.artist,
+                    audio_url: songData.audioUrl,
+                    requested_by: songData.requestedBy,
+                    cover_hint: songData.coverHint || null,
+                });
+                if (insertError) throw new Error(insertError.message);
+
+                statusMsg.style.color = "#52c78f";
+                statusMsg.innerText = "✅ Inserito in coda!";
+                document.getElementById("song-link").value = "";
+                fileInput.value = "";
+                forceCheckQueue();
+            } catch (err) {
+                console.error(err);
+                statusMsg.style.color = "#e05a52";
+                statusMsg.innerText = "❌ Errore: " + err.message;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        }
+
+        // --- CODA ---
+        function renderQueue(items) {
+            const queueListEl = document.getElementById("queue-list");
+            if (!items || items.length === 0) {
+                queueListEl.innerHTML = '<li class="queue-empty">La coda è vuota.</li>';
+                return;
+            }
+            queueListEl.innerHTML = items
+                .map((item, index) => {
+                    const isYouTube = item.audio_url && item.audio_url.startsWith && item.audio_url.startsWith('yt:');
+                    const displayTitle = item.title || (isYouTube ? (`YouTube ${item.audio_url ? item.audio_url.slice(3) : ''}`) : 'Traccia');
+                    const badge = isYouTube ? '🎬' : '🎵';
+                    return `<li class="queue-item"><span class="idx">${String(index + 1).padStart(2, '0')}</span><span>${badge}</span><span class="meta">${escapeHtml(displayTitle)} <span class="artist">— ${escapeHtml(item.artist || '')}</span></span></li>`;
+                })
+                .join("");
+        }
+
+        function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+        async function loadQueue() {
+            const { data, error } = await sb.from("queue").select("*").order("created_at", { ascending: true });
+            if (error) { console.error("Errore caricamento coda:", error.message); return; }
+            renderQueue(data);
+        }
+
+        sb.channel("queue-changes")
+            .on("postgres_changes", { event: "*", schema: "public", table: "queue" }, loadQueue)
+            .subscribe();
+        loadQueue();
+
+        // --- STATO RADIO (brano corrente) ---
+        const audioPlayer = document.getElementById('radio-player');
+
+        audioPlayer.addEventListener('play', () => setPlayingState(true));
+        audioPlayer.addEventListener('pause', () => setPlayingState(false));
+        audioPlayer.addEventListener('timeupdate', () => {
+            if (audioPlayer.duration) updateWaveformProgress(audioPlayer.currentTime, audioPlayer.duration);
+        });
+        audioPlayer.addEventListener('ended', () => {
+            autoAdvance();
+        });
+        audioPlayer.addEventListener('error', () => {
+            console.warn("Errore riproduzione audio, skip automatico.");
+            advanceQueue();
+            autoAdvance();
+        });
+
+        function renderCurrent(data) {
+            stopYtPolling();
+
+            if (!data) {
+                try { if (window.ChinoFMYouTube) window.ChinoFMYouTube.stop(); } catch(e){}
+                audioPlayer.pause();
+                audioPlayer.removeAttribute('src');
+                setPlayingState(false);
+                document.getElementById('album-cover').src = "https://via.placeholder.com/160/12151b/565c6a?text=%E2%99%AB";
+                document.getElementById('album-cover').src = "https://via.placeholder.com/380/12151b/565c6a?text=%E2%99%AB";
+                document.getElementById('song-title').innerText = "In attesa di brani...";
+                document.getElementById('song-artist').innerText = "Radio online";
+                document.getElementById('requested-by').innerText = "—";
+                document.getElementById('artist-name').innerText = "—";
+                document.getElementById('artist-bio').innerText = "Nessun brano in riproduzione.";
+                document.getElementById('artist-bio').classList.add('is-empty');
+                document.getElementById('artist-photo').src = "https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB";
+                buildWaveform('idle');
+                updateWaveformProgress(0, 0);
+                return;
+            }
+
+            document.getElementById('song-title').innerText = data.title;
+            document.getElementById('song-artist').innerText = data.artist;
+            document.getElementById('requested-by').innerText = data.requested_by;
+
+            buildWaveform((data.title || '') + '|' + (data.artist || ''));
+            loadEnrichment(data.title, data.artist);
+            loadEnrichment(data.title, data.artist, data.cover_hint);
+
+            const audioUrl = data.audio_url || '';
+            const isYouTube = audioUrl.startsWith && audioUrl.startsWith('yt:');
+
+            let startOffset = 0;
+            if (data.start_time) {
+                startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
+            }
+
+            if (isYouTube) {
+                const vid = audioUrl.slice(3);
+                try {
+                    if (window.ChinoFMYouTube && typeof window.ChinoFMYouTube.play === 'function') {
+                        window.ChinoFMYouTube.play(vid, new Date(data.start_time).getTime());
+                        startYtPolling();
+                    }
+                } catch(e) {
+                    console.warn("Errore avviando YouTube player:", e);
+                }
+            } else {
+                if (audioPlayer.src !== audioUrl) audioPlayer.src = audioUrl;
+                if (Math.abs(audioPlayer.currentTime - startOffset) > 2) {
+                    try { audioPlayer.currentTime = startOffset; } catch(e){}
+                }
+                audioPlayer.play().then(() => setPlayingState(true)).catch(()=>{});
+            }
+        }
+
+        async function loadCurrent() {
+            const { data, error } = await sb.from("radio_state").select("*").eq("id", "current").maybeSingle();
+            if (error) { console.error("Errore caricamento stato radio:", error.message); return; }
+            renderCurrent(data);
+        }
+
+        sb.channel("state-changes")
+            .on("postgres_changes", { event: "*", schema: "public", table: "radio_state" }, loadCurrent)
+            .subscribe();
+        loadCurrent();
+
+        // --- AVANZAMENTO CODA ---
+        async function forceCheckQueue() {
+            const { data } = await sb.from("radio_state").select("id").eq("id", "current").maybeSingle();
+            if (!data) advanceQueue();
+        }
+
+        async function advanceQueue() {
+            const { data: nextSongs, error: fetchError } = await sb
+                .from("queue").select("*").order("created_at", { ascending: true }).limit(1);
+            if (fetchError) { console.error("Errore lettura coda:", fetchError.message); return; }
+
+            if (!nextSongs || nextSongs.length === 0) {
+                await sb.from("radio_state").delete().eq("id", "current");
+                return;
+            }
+
+            const next = nextSongs[0];
+            await sb.from("radio_state").upsert({
+                id: "current",
+                title: next.title,
+                artist: next.artist,
+                audio_url: next.audio_url,
+                requested_by: next.requested_by,
+                cover_hint: next.cover_hint || null,
+                start_time: new Date().toISOString(),
+            });
+            await sb.from("queue").delete().eq("id", next.id);
+        }
+
+        function forceSkip() { advanceQueue(); }
+
+        // Waveform iniziale (stato "in attesa")
+        buildWaveform('idle');
+    </script>
+</body>
+</html>
