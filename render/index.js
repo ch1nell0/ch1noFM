@@ -11,40 +11,18 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-// --- SERVER PO TOKEN (bgutil) ---
-// yt-dlp da solo (anche con cookie) viene sempre più spesso respinto da YouTube con
-// "Sign in to confirm you're not a bot". La soluzione ufficiale è generare dei PO Token
-// (Proof-of-Origin) da allegare alle richieste. Il plugin Python (installato via pip nel
-// build) si registra da solo in yt-dlp; qui avviamo SOLO il server Node.js che genera
-// i token, in background, sulla porta di default 4416. Se il server non parte (es. build
-// fallita), yt-dlp continua a funzionare normalmente ma senza il PO Token.
-const BGUTIL_SERVER_ENTRY = path.join(__dirname, "bgutil-server-src", "server", "build", "main.js");
-function startBgutilServer() {
-  if (!fs.existsSync(BGUTIL_SERVER_ENTRY)) {
-    console.warn("[bgutil] server non trovato (" + BGUTIL_SERVER_ENTRY + ") - PO Token disattivati, si va avanti senza.");
-    return;
-  }
-  const child = spawn(process.execPath, [BGUTIL_SERVER_ENTRY], { stdio: ["ignore", "pipe", "pipe"] });
-  child.stdout.on("data", (d) => console.log("[bgutil]", d.toString().trim()));
-  child.stderr.on("data", (d) => console.warn("[bgutil]", d.toString().trim()));
-  child.on("exit", (code) => {
-    console.warn(`[bgutil] server terminato inaspettatamente (code ${code}), riavvio tra 5s...`);
-    setTimeout(startBgutilServer, 5000);
-  });
-  console.log("[bgutil] server PO Token avviato in background sulla porta 4416.");
-}
-startBgutilServer();
+
 const app = express();
 
 // --- COOKIE YOUTUBE PER YT-DLP ---
-// Fonti supportate, in ordine di priorità:
+// Usata SOLO dalla route "altri siti" (CASO 3) piu' sotto: link YouTube, Spotify,
+// Deezer, Apple Music e Tidal non passano MAI da qui, quindi per la maggior parte
+// dei brani richiesti questo blocco non serve nemmeno piu'. Lo teniamo per i link
+// "generici" (mp3 diretti da altri siti) dove yt-dlp resta l'unica opzione.
+//
+// Fonti supportate, in ordine di priorita':
 // 1) Secret File di Render "cookies.txt" -> montato in /etc/secrets/cookies.txt (sola lettura)
 // 2) Env var YTDLP_COOKIES con il contenuto diretto del cookies.txt
-//
-// IMPORTANTE: qualunque sia la fonte, il contenuto viene sempre copiato in un file
-// temporaneo SCRIVIBILE prima di passarlo a yt-dlp. yt-dlp, a fine esecuzione, prova
-// a riscrivere il file dei cookie con eventuali aggiornamenti di sessione: se il path
-// punta al Secret File (read-only) questo causa un crash (OSError: Read-only file system).
 const YTDLP_COOKIES_TMP_PATH = path.join(os.tmpdir(), "yt-cookies.txt");
 const RENDER_SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt";
 let cookiesResolved = false;
@@ -56,7 +34,6 @@ function getYtdlpCookiesPath() {
 
   let rawContent = null;
 
-  // 1) Secret File di Render
   try {
     if (fs.existsSync(RENDER_SECRET_COOKIES_PATH)) {
       const content = fs.readFileSync(RENDER_SECRET_COOKIES_PATH, "utf8");
@@ -71,16 +48,12 @@ function getYtdlpCookiesPath() {
     console.warn("[cookies] errore leggendo il Secret File:", e.message);
   }
 
-  // 2) Env var come fallback, solo se il Secret File non ha dato nulla
   if (!rawContent) {
     const raw = process.env.YTDLP_COOKIES;
     if (raw && raw.trim()) {
       const trimmed = raw.trim();
       if (trimmed.startsWith("/") || trimmed.startsWith("./")) {
-        console.warn(
-          "[cookies] YTDLP_COOKIES sembra un PERCORSO ('" + trimmed +
-          "') e non il contenuto del file: la ignoro."
-        );
+        console.warn("[cookies] YTDLP_COOKIES sembra un PERCORSO ('" + trimmed + "') e non il contenuto del file: la ignoro.");
       } else {
         rawContent = raw;
         console.log("[cookies] uso il contenuto di YTDLP_COOKIES.");
@@ -89,11 +62,10 @@ function getYtdlpCookiesPath() {
   }
 
   if (!rawContent) {
-    console.warn("[cookies] Nessun cookie trovato: yt-dlp funzionerà solo finché YouTube non blocca l'IP del server.");
+    console.warn("[cookies] Nessun cookie trovato: la route 'altri siti' funzionera' solo finche' l'IP del server non viene bloccato.");
     return null;
   }
 
-  // Copia SEMPRE in un file temporaneo scrivibile, indipendentemente dalla fonte.
   try {
     fs.writeFileSync(YTDLP_COOKIES_TMP_PATH, rawContent);
     cachedCookiesPath = YTDLP_COOKIES_TMP_PATH;
@@ -106,9 +78,7 @@ function getYtdlpCookiesPath() {
 
 function withCookies(opts) {
   const cookiesPath = getYtdlpCookiesPath();
-  const base = cookiesPath ? { ...opts, cookies: cookiesPath } : { ...opts };
-  base.extractorArgs = "youtube:player_client=web,android";
-  return base;
+  return cookiesPath ? { ...opts, cookies: cookiesPath } : { ...opts };
 }
 
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -126,6 +96,7 @@ app.get("/health", (req, res) => res.status(200).send("OK"));
 app.get("/", (req, res) => res.status(200).send("ch1noFM backend attivo."));
 
 // --- SISTEMA UPLOAD (Litterbox -> Catbox -> Pixeldrain) ---
+// Usato solo per upload manuali di file locali e per la route "altri siti".
 async function uploadToLitterbox(fileBuffer, fileName, time = "12h") {
   const form = new FormData();
   form.append("reqtype", "fileupload");
@@ -275,62 +246,6 @@ function parseArtistTitle(rawTitle) {
   return { artist: null, title: cleaned };
 }
 
-// --- SPOTIFY: niente streaming reale (protetto), ma leggiamo titolo/artista/cover
-// dalla pagina pubblica del brano e poi scarichiamo l'equivalente audio da YouTube ---
-async function resolveSpotifyTrack(url) {
-  const { data: html } = await axios.get(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-    timeout: 8000,
-  });
-
-  const titleMatch = html.match(/<title>(.*?)<\/title>/i);
-  const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
-
-  let title = null;
-  let artist = null;
-
-  if (titleMatch) {
-    const raw = titleMatch[1].replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&quot;/g, '"');
-    // Formato tipico della pagina Spotify: "Nome Brano - song by Artista1, Artista2 | Spotify"
-    const m = raw.match(/^(.*?)\s*-\s*song (?:and lyrics )?by\s*(.*?)\s*\|\s*Spotify$/i);
-    if (m) {
-      title = m[1].trim();
-      artist = m[2].trim();
-    } else {
-      title = raw.replace(/\s*\|\s*Spotify$/i, "").trim();
-    }
-  }
-
-  if (!title) throw new Error("Impossibile leggere i metadati dalla pagina Spotify.");
-
-  return { title, artist, cover: ogImageMatch ? ogImageMatch[1] : null };
-}
-
-async function downloadSpotifyViaYouTubeSearch(spotifyMeta, outputFile) {
-  const searchQuery = spotifyMeta.artist ? `${spotifyMeta.artist} ${spotifyMeta.title}` : spotifyMeta.title;
-  const searchTerm = `ytsearch1:${searchQuery}`;
-
-  const info = await ytDlp(searchTerm, withCookies({
-    dumpSingleJson: true,
-    noWarnings: true,
-    noPlaylist: true,
-    format: "bestaudio/best",
-    verbose: true, // TEMPORANEO: ci mostra se il PO Token provider (bgutil) è registrato
-  }));
-  const videoInfo = info.entries ? info.entries[0] : info;
-
-  await ytDlp(searchTerm, withCookies({
-    extractAudio: true,
-    audioFormat: "mp3",
-    output: outputFile,
-    ffmpegLocation: ffmpegPath,
-    noPlaylist: true,
-    format: "bestaudio/best",
-  }));
-
-  return videoInfo;
-}
-
 // --- METADATI YOUTUBE VIA OEMBED (endpoint pubblico ufficiale, no scraping) ---
 async function getYouTubeMeta(videoId, originalUrl) {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
@@ -345,9 +260,6 @@ async function getYouTubeMeta(videoId, originalUrl) {
 
     return {
       title: parsed.title || rawTitle,
-      // Se il titolo del video segue "Artista - Titolo" usiamo quello; altrimenti
-      // teniamo il nome del canale solo come ultima spiaggia (verrà comunque
-      // ricontrollato/corretto da /enrich tramite iTunes/Deezer/MusicBrainz).
       artist: parsed.artist || channelName,
       channelName,
     };
@@ -357,20 +269,131 @@ async function getYouTubeMeta(videoId, originalUrl) {
   }
 }
 
-// --- FALLBACK: YTMDL (usato quando yt-dlp fallisce sui siti generici) ---
-// Richiede: Python 3 + `pip install ytmdl` disponibili nell'ambiente Render
-// (aggiungi un build step, es. `pip install ytmdl` nel build command).
-// ytmdl si appoggia a ffmpeg per la conversione: gli passiamo la cartella
-// di ffmpeg-static nel PATH cosi lo trova anche se non e' installato a livello di sistema.
+// --- RISOLUZIONE PIATTAFORME "SOLO METADATI" (Spotify, Deezer, Apple Music, Tidal) ---
+// Questi servizi proteggono l'audio con DRM: non lo scarichiamo (ne' potremmo farlo
+// legalmente). Leggiamo SOLO i metadati pubblici (titolo/artista/copertina) dalla loro
+// pagina web, poi cerchiamo il brano corrispondente su YouTube tramite l'API ufficiale
+// e lo riproduciamo esattamente come un link YouTube incollato a mano: player nascosto
+// via iframe, nessun download, nessun yt-dlp coinvolto per questi link.
+function detectMetadataOnlyPlatform(url) {
+  if (url.includes("open.spotify.com")) return "spotify";
+  if (url.includes("deezer.com")) return "deezer";
+  if (url.includes("music.apple.com")) return "apple_music";
+  if (url.includes("tidal.com") || url.includes("listen.tidal.com")) return "tidal";
+  return null;
+}
+
+function decodeHtmlEntities(s) {
+  if (!s) return s;
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
+}
+
+function extractPageMeta(html) {
+  const og = (prop) => {
+    const m = html.match(new RegExp(`<meta property="og:${prop}" content="([^"]+)"`, "i"));
+    return m ? decodeHtmlEntities(m[1]) : null;
+  };
+  const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+  return {
+    ogTitle: og("title"),
+    ogImage: og("image"),
+    titleTag: titleMatch ? decodeHtmlEntities(titleMatch[1]) : null,
+  };
+}
+
+// Ogni piattaforma formatta il tag <title> in modo diverso: proviamo il pattern
+// specifico e, se non matcha (i siti cambiano formato senza preavviso), ripieghiamo
+// su una pulizia generica cosi' la ricerca funziona comunque, solo con l'artista
+// separato dal titolo un po' meno preciso.
+function parseTrackPageTitle(platform, rawTitle) {
+  if (!rawTitle) return { title: null, artist: null };
+
+  if (platform === "spotify") {
+    const m = rawTitle.match(/^(.*?)\s*-\s*song (?:and lyrics )?by\s*(.*?)\s*\|\s*Spotify$/i);
+    if (m) return { title: m[1].trim(), artist: m[2].trim() };
+    return { title: rawTitle.replace(/\s*\|\s*Spotify$/i, "").trim(), artist: null };
+  }
+
+  if (platform === "deezer") {
+    let m = rawTitle.match(/^(.*?)\s*-\s*(.*?)\s*-\s*[Ll]isten on Deezer\s*$/);
+    if (m) return { artist: m[1].trim(), title: m[2].trim() };
+    m = rawTitle.match(/^(.*?)\s+by\s+(.*?)\s*\|\s*Deezer\s*$/i);
+    if (m) return { title: m[1].trim(), artist: m[2].trim() };
+    return { title: rawTitle.replace(/\s*[-|]\s*Deezer.*$/i, "").trim(), artist: null };
+  }
+
+  if (platform === "apple_music") {
+    let m = rawTitle.match(/^(.*?)\s*-\s*[Ss]ong by\s*(.*?)\s*-\s*Apple Music\s*$/);
+    if (m) return { title: m[1].trim(), artist: m[2].trim() };
+    m = rawTitle.match(/^(.*?)\s+by\s+(.*?)\s+on\s+Apple Music\s*$/i);
+    if (m) return { title: m[1].trim(), artist: m[2].trim() };
+    return { title: rawTitle.replace(/\s*[-|]\s*Apple Music.*$/i, "").trim(), artist: null };
+  }
+
+  if (platform === "tidal") {
+    const m = rawTitle.match(/^(.*?)\s+by\s+(.*?)\s+on\s+TIDAL\s*$/i);
+    if (m) return { title: m[1].trim(), artist: m[2].trim() };
+    return { title: rawTitle.replace(/\s*[-|]\s*TIDAL.*$/i, "").trim(), artist: null };
+  }
+
+  return { title: rawTitle, artist: null };
+}
+
+async function resolveTrackPageMetadata(url, platform) {
+  const { data: html } = await axios.get(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    timeout: 8000,
+  });
+
+  const meta = extractPageMeta(html);
+  const rawTitle = meta.titleTag || meta.ogTitle;
+  if (!rawTitle) throw new Error(`Impossibile leggere i metadati dalla pagina (${platform}).`);
+
+  const parsed = parseTrackPageTitle(platform, rawTitle);
+  return {
+    title: parsed.title || rawTitle,
+    artist: parsed.artist || null,
+    cover: meta.ogImage || null,
+  };
+}
+
+// --- RICERCA YOUTUBE VIA API UFFICIALE (nessuno scraping, nessun yt-dlp) ---
+// Serve una API key gratuita: console.cloud.google.com -> abilita "YouTube Data API v3"
+// -> Credenziali -> crea API key -> impostala su Render come YOUTUBE_API_KEY.
+// Piano gratuito: 10.000 unita'/giorno, una ricerca ne costa 100 -> 100 ricerche/giorno.
+async function searchYouTubeVideoId(query) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    throw new Error("YOUTUBE_API_KEY non impostata su Render: impossibile cercare su YouTube senza l'API ufficiale.");
+  }
+  const { data } = await axios.get("https://www.googleapis.com/youtube/v3/search", {
+    params: {
+      part: "snippet",
+      q: query,
+      type: "video",
+      maxResults: 1,
+      key: apiKey,
+    },
+    timeout: 8000,
+  });
+  const hit = data.items && data.items[0];
+  if (!hit) return null;
+  return {
+    videoId: hit.id.videoId,
+    title: decodeHtmlEntities(hit.snippet.title),
+    channelTitle: hit.snippet.channelTitle,
+  };
+}
+
+// --- FALLBACK: YTMDL (usato SOLO dalla route "altri siti" quando yt-dlp fallisce) ---
+// Richiede: Python 3 + `pip install ytmdl` disponibili nell'ambiente Render.
 function runYtmdl(url, songNameHint, outDir, fileBaseName) {
   return new Promise((resolve, reject) => {
-    const args = [
-      "-q",                 // non chiedere conferme, prendi il primo risultato
-      "-o", outDir,         // cartella di output
-      "--filename", fileBaseName,
-      "--url", url,         // link diretto da scaricare (bypassa la ricerca per l'audio)
-      songNameHint || url,  // usato solo per i metadati/tag
-    ];
+    const args = ["-q", "-o", outDir, "--filename", fileBaseName, "--url", url, songNameHint || url];
 
     const child = spawn("ytmdl", args, {
       env: {
@@ -392,9 +415,7 @@ function runYtmdl(url, songNameHint, outDir, fileBaseName) {
     });
     child.on("close", (code) => {
       clearTimeout(timeout);
-      if (code !== 0) {
-        return reject(new Error(`ytmdl fallito (exit ${code}): ${stderr.slice(-400)}`));
-      }
+      if (code !== 0) return reject(new Error(`ytmdl fallito (exit ${code}): ${stderr.slice(-400)}`));
       resolve();
     });
   });
@@ -424,60 +445,10 @@ async function downloadWithYtmdlFallback(link) {
   }
 }
 
-// --- Variante di ytmdl basata su ricerca testuale (nessun --url): usata per Spotify,
-// dove non abbiamo un link YouTube diretto ma solo "Artista + Titolo" da cercare.
-// NOTA: anche questa passa da yt-dlp/YouTube sotto il cofano, quindi soffre dello
-// stesso blocco anti-bot finche' YTDLP_COOKIES non e' impostata.
-function runYtmdlSearch(query, outDir, fileBaseName) {
-  return new Promise((resolve, reject) => {
-    const args = ["-q", "-o", outDir, "--filename", fileBaseName, query];
-
-    const child = spawn("ytmdl", args, {
-      env: {
-        ...process.env,
-        PATH: `${path.dirname(ffmpegPath)}${path.delimiter}${process.env.PATH || ""}`,
-      },
-    });
-
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("ytmdl: timeout (60s) superato."));
-    }, 60000);
-
-    child.stderr.on("data", (d) => { stderr += d.toString(); });
-    child.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(new Error("ytmdl non disponibile sul server: " + err.message));
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      if (code !== 0) return reject(new Error(`ytmdl fallito (exit ${code}): ${stderr.slice(-400)}`));
-      resolve();
-    });
-  });
-}
-
-async function downloadWithYtmdlSearch(query) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ytmdl-search-"));
-  const fileBase = `track_${Date.now()}`;
-  try {
-    await runYtmdlSearch(query, tmpDir, fileBase);
-    const files = fs.readdirSync(tmpDir).filter((f) => f.toLowerCase().endsWith(".mp3"));
-    if (files.length === 0) throw new Error("ytmdl non ha prodotto alcun file mp3.");
-    const filePath = path.join(tmpDir, files[0]);
-    const buffer = fs.readFileSync(filePath);
-    const audioUrl = await uploadAudio(buffer, `${Date.now()}_ytmdl.mp3`);
-    return { audioUrl, downloadedName: files[0].replace(/\.mp3$/i, "") };
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-}
-
 // --- ENRICHMENT: copertina album + info artista, con fallback a catena ---
 // Nessuna delle fonti sotto richiede una API key (tranne Last.fm, opzionale
 // se imposti la env var LASTFM_API_KEY su Render).
-const enrichCache = new Map(); // key: "title|artist" -> { data, ts }
+const enrichCache = new Map(); // key: "title|artist|coverHint" -> { data, ts }
 const ENRICH_CACHE_TTL = 1000 * 60 * 60 * 6; // 6 ore
 const MB_USER_AGENT = "ch1noFM/1.0 (webradio tra amici)";
 
@@ -496,8 +467,6 @@ function cacheSet(key, data) {
 }
 
 // --- Copertina + ARTISTA CANONICO: iTunes -> Deezer -> MusicBrainz/CoverArtArchive ---
-// Ogni fonte restituisce anche il nome artista che LEI ha trovato per quel brano:
-// e' molto piu' affidabile del nome canale YouTube (che spesso e' un reupload/freebooter).
 async function trackFromItunes(title, artist) {
   const term = `${artist || ""} ${title}`.trim();
   const { data } = await axios.get("https://itunes.apple.com/search", {
@@ -551,8 +520,6 @@ async function trackFromMusicBrainz(title, artist) {
   return { cover, artist: canonicalArtist || null };
 }
 
-// Restituisce { cover, canonicalArtist } usando la prima fonte che da' un risultato utile,
-// per una data coppia (title, artist).
 async function findCoverArtOnce(title, artist) {
   const sources = [trackFromItunes, trackFromDeezer, trackFromMusicBrainz];
   let cover = null;
@@ -580,17 +547,13 @@ function stripFeaturedArtist(artist) {
   return m ? m[1].trim() : artist;
 }
 
-// Molti reupload/freebooter mettono il titolo del video in ordine "Titolo - Artista"
-// invece di "Artista - Titolo" (o viceversa), quindi non ci si puo' fidare ciecamente
-// dell'ordine che abbiamo indovinato. Proviamo piu' combinazioni finche' una non da'
-// un risultato, e ci fidiamo del nome artista restituito dal provider (non del nostro).
 async function findCoverArt(title, artist) {
   const primaryArtist = stripFeaturedArtist(artist);
   const attempts = [];
   if (primaryArtist && primaryArtist !== artist) attempts.push([title, primaryArtist]);
   if (title || artist) attempts.push([title, artist]);
   if (title && artist) attempts.push([artist, title]); // ordine invertito
-  if (title) attempts.push([title, null]); // solo titolo, nessun bias sull'artista
+  if (title) attempts.push([title, null]);
 
   for (const [t, a] of attempts) {
     const hit = await findCoverArtOnce(t, a).catch(() => ({ cover: null, canonicalArtist: null }));
@@ -599,13 +562,12 @@ async function findCoverArt(title, artist) {
   return { cover: null, canonicalArtist: null };
 }
 
-// --- Validazione nome: evita di accettare foto/bio di un artista omonimo o
-// completamente sbagliato (es. la foto "Drake" restituita da Deezer che non era Drake). ---
+// --- Validazione nome: evita di accettare foto/bio di un artista omonimo o sbagliato ---
 function normalizeArtistName(s) {
   return (s || "")
     .toLowerCase()
-    .replace(/\(.*?\)/g, "") // rimuove "(musician)", "(rapper)" ecc.
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // rimuove accenti
+    .replace(/\(.*?\)/g, "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/^the\s+/, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
@@ -618,8 +580,6 @@ function namesRoughlyMatch(a, b) {
   return na.includes(nb) || nb.includes(na);
 }
 
-// --- Divide il credito artista in stile Spotify: artista/i principale/i + featured,
-// cosi' possiamo mostrarli come schede separate e cliccabili. ---
 function parseArtistCredits(rawArtist) {
   if (!rawArtist) return { primary: [], featured: [] };
   let primaryPart = rawArtist;
@@ -629,18 +589,16 @@ function parseArtistCredits(rawArtist) {
     primaryPart = ftMatch[1];
     featuredPart = ftMatch[2];
   }
-  const splitNames = (s) =>
-    s.split(/\s*(?:&|,|\/| x |×)\s*/i).map((n) => n.trim()).filter(Boolean);
+  const splitNames = (s) => s.split(/\s*(?:&|,|\/| x |×)\s*/i).map((n) => n.trim()).filter(Boolean);
   return { primary: splitNames(primaryPart), featured: splitNames(featuredPart) };
 }
 
-// --- Artista: Wikipedia (bio + foto) -> Deezer (foto) -> Last.fm opzionale ---
 async function artistFromWikipedia(artist, lang) {
   const url = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(artist)}`;
   const { data } = await axios.get(url, { timeout: 6000, headers: { "User-Agent": MB_USER_AGENT } });
   if (!data || data.type === "disambiguation") return null;
   const name = data.title || artist;
-  if (!namesRoughlyMatch(artist, name)) return null; // pagina non pertinente, la scartiamo
+  if (!namesRoughlyMatch(artist, name)) return null;
   return {
     bio: data.extract || null,
     photo: (data.thumbnail && data.thumbnail.source) || (data.originalimage && data.originalimage.source) || null,
@@ -654,7 +612,7 @@ async function artistFromDeezer(artist) {
     timeout: 6000,
   });
   const hit = data.data && data.data[0];
-  if (!hit || !namesRoughlyMatch(artist, hit.name)) return null; // scarta match dubbi/omonimi
+  if (!hit || !namesRoughlyMatch(artist, hit.name)) return null;
   return { bio: null, photo: hit.picture_xl || hit.picture_big || hit.picture_medium || null, name: hit.name };
 }
 
@@ -676,9 +634,6 @@ async function findArtistInfo(artist) {
 
   let result = { bio: null, photo: null, name: artist };
 
-  // Last.fm per primo: e' l'unica fonte che ha pagine dedicate alle collaborazioni
-  // (es. "Freddie Gibbs & Madlib"), che Wikipedia di solito non ha come pagina a se'.
-  // Se LASTFM_API_KEY non e' impostata, questa fonte viene semplicemente saltata.
   const bioSources = [
     () => artistFromLastfm(artist),
     () => artistFromWikipedia(artist, "it"),
@@ -695,7 +650,6 @@ async function findArtistInfo(artist) {
     }
   }
 
-  // Foto: se ancora mancante, prova Deezer
   if (!result.photo) {
     try {
       const info = await artistFromDeezer(artist);
@@ -719,19 +673,12 @@ app.get("/enrich", async (req, res) => {
   if (cached) return res.json(cached);
 
   try {
-    // FASE 1: troviamo la copertina e, soprattutto, l'artista "vero" del brano
-    // (non il nome del canale YouTube che l'ha ripubblicato).
     const { cover, canonicalArtist } = await findCoverArt(title, artist).catch(() => ({ cover: null, canonicalArtist: null }));
     const resolvedArtist = canonicalArtist || artist || null;
 
-    // FASE 2: come fa Spotify, separiamo l'artista/i principale/i dai featured
-    // (es. "Alchemist Ft. Nina Sky" -> principale: Alchemist, featured: Nina Sky;
-    // "Freddie Gibbs & Madlib" -> entrambi principali, e' una collab vera e propria).
-    // Ognuno viene cercato separatamente cosi' il frontend puo' mostrarli come
-    // schede cliccabili distinte, invece di un'unica bio confusa.
     const credits = parseArtistCredits(resolvedArtist);
     const primaryNames = credits.primary.length ? credits.primary : (resolvedArtist ? [resolvedArtist] : []);
-    const featuredNames = credits.featured.slice(0, 3); // limite di buon senso sulle chiamate esterne
+    const featuredNames = credits.featured.slice(0, 3);
 
     const artists = [];
     for (const name of primaryNames.slice(0, 2)) {
@@ -803,61 +750,38 @@ app.post("/download", async (req, res) => {
     });
   }
 
-  // CASO 2.5: SPOTIFY -> non scaricabile direttamente (protetto), risolviamo i
-  // metadati (titolo/artista/cover) dalla pagina pubblica e cerchiamo l'audio
-  // equivalente su YouTube (prima con yt-dlp diretto, poi con ytmdl come seconda
-  // via). Entrambi passano da YouTube, quindi entrambi dipendono da YTDLP_COOKIES.
-  if (cleanLink.includes("open.spotify.com")) {
-    const spotifyOutputFile = path.join(os.tmpdir(), `spotify_${Date.now()}.mp3`);
-    let spotifyMeta;
+  // CASO 2.5: SPOTIFY / DEEZER / APPLE MUSIC / TIDAL -> streaming protetto da DRM,
+  // impossibile (e non lecito) scaricarlo direttamente. Leggiamo solo i metadati
+  // pubblici della pagina (titolo, artista, copertina), cerchiamo il brano
+  // corrispondente su YouTube con l'API ufficiale, e lo trattiamo ESATTAMENTE come
+  // un link YouTube incollato a mano: nessun yt-dlp, nessun download, nessun upload,
+  // solo player nascosto via iframe (stesso meccanismo del CASO 2).
+  const metadataPlatform = detectMetadataOnlyPlatform(cleanLink);
+  if (metadataPlatform) {
     try {
-      spotifyMeta = await resolveSpotifyTrack(cleanLink);
-    } catch (err) {
-      console.error("[Errore Spotify - metadata]:", err.message);
-      return res.status(500).json({ error: "Impossibile leggere i metadati da Spotify: " + err.message });
-    }
+      const meta = await resolveTrackPageMetadata(cleanLink, metadataPlatform);
+      const query = meta.artist ? `${meta.artist} ${meta.title}` : meta.title;
 
-    try {
-      const videoInfo = await downloadSpotifyViaYouTubeSearch(spotifyMeta, spotifyOutputFile);
-      const audioBuffer = fs.readFileSync(spotifyOutputFile);
-      const audioUrl = await uploadAudio(audioBuffer, `${Date.now()}_spotify.mp3`);
+      const ytHit = await searchYouTubeVideoId(query);
+      if (!ytHit) throw new Error("Nessun video YouTube corrispondente trovato.");
 
       return res.json({
-        source: "file",
-        audioUrl,
-        title: spotifyMeta.title,
-        artist: spotifyMeta.artist || videoInfo.uploader || "Spotify",
-        // La cover di Spotify e' quasi sempre affidabile: la passiamo come suggerimento
-        // cosi' /enrich puo' usarla senza dover cercare altrove.
-        coverHint: spotifyMeta.cover || null,
+        source: "youtube",
+        youtubeId: ytHit.videoId,
+        title: meta.title || ytHit.title,
+        artist: meta.artist || ytHit.channelTitle,
+        coverHint: meta.cover || null,
+        startedAt: Date.now(),
       });
-    } catch (ytDlpErr) {
-      console.warn("[Spotify: yt-dlp diretto fallito, provo ytmdl]:", ytDlpErr.message);
-      try {
-        const query = spotifyMeta.artist ? `${spotifyMeta.artist} ${spotifyMeta.title}` : spotifyMeta.title;
-        const ytmdlResult = await downloadWithYtmdlSearch(query);
-
-        return res.json({
-          source: "file",
-          audioUrl: ytmdlResult.audioUrl,
-          title: spotifyMeta.title,
-          artist: spotifyMeta.artist || "Spotify",
-          coverHint: spotifyMeta.cover || null,
-        });
-      } catch (ytmdlErr) {
-        console.error("[Errore Spotify - anche ytmdl fallito]:", ytmdlErr.message);
-        return res.status(500).json({
-          error:
-            "Download da Spotify fallito (yt-dlp: " + ytDlpErr.message + " | ytmdl: " + ytmdlErr.message + "). " +
-            "Molto probabilmente serve impostare YTDLP_COOKIES su Render: YouTube sta bloccando l'IP del server.",
-        });
-      }
-    } finally {
-      if (fs.existsSync(spotifyOutputFile)) fs.unlinkSync(spotifyOutputFile);
+    } catch (err) {
+      console.error(`[Errore ${metadataPlatform}]:`, err.message);
+      return res.status(500).json({
+        error: `Impossibile risolvere il brano da ${metadataPlatform}: ` + err.message,
+      });
     }
   }
 
-  // CASO 3: ALTRI SITI (yt-dlp, con fallback su ytmdl se fallisce)
+  // CASO 3: ALTRI SITI (mp3 diretti o siti supportati da yt-dlp, con fallback su ytmdl)
   const outputFile = path.join(os.tmpdir(), `song_${Date.now()}.mp3`);
   try {
     let videoInfo;
@@ -897,9 +821,7 @@ app.post("/download", async (req, res) => {
         return res.json(fallbackResult);
       } catch (ytmdlErr) {
         console.error("[Anche ytmdl fallito]:", ytmdlErr.message);
-        throw new Error(
-          `yt-dlp: ${ytDlpErr.stderr || ytDlpErr.message} | ytmdl: ${ytmdlErr.message}`
-        );
+        throw new Error(`yt-dlp: ${ytDlpErr.stderr || ytDlpErr.message} | ytmdl: ${ytmdlErr.message}`);
       }
     }
   } catch (err) {
