@@ -676,6 +676,7 @@
                         songData.audioUrl = `yt:${vid}`;
                         songData.title = result.title || `YouTube ${vid}`;
                         songData.artist = result.artist || "YouTube";
+                        songData.coverHint = result.coverHint || null; // presente per brani risolti da Spotify/Deezer/Apple Music/Tidal
                     } else if (result.source === "file") {
                         songData.type = "file";
                         songData.audioUrl = result.audioUrl;
