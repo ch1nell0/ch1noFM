@@ -280,7 +280,48 @@ function detectMetadataOnlyPlatform(url) {
   if (url.includes("deezer.com")) return "deezer";
   if (url.includes("music.apple.com")) return "apple_music";
   if (url.includes("tidal.com") || url.includes("listen.tidal.com")) return "tidal";
+  if (url.includes("soundcloud.com")) return "soundcloud";
   return null;
+}
+
+// Gli URL di Apple Music per un singolo brano finiscono con l'ID del catalogo iTunes
+// (es. .../song/jet-set/285024166 -> id 285024166). Se lo troviamo, l'API iTunes
+// Lookup e' molto piu' affidabile dello scraping del tag <title> della pagina.
+function extractAppleMusicTrackId(url) {
+  const m = url.match(/\/song\/[^/]+\/(\d+)/) || url.match(/[?&]i=(\d+)/);
+  return m ? m[1] : null;
+}
+
+async function resolveAppleMusicViaItunesLookup(trackId) {
+  const { data } = await axios.get("https://itunes.apple.com/lookup", {
+    params: { id: trackId },
+    timeout: 6000,
+  });
+  const hit = data.results && data.results[0];
+  if (!hit || !hit.trackName) return null;
+  return {
+    title: hit.trackName,
+    artist: hit.artistName || null,
+    cover: hit.artworkUrl100 ? hit.artworkUrl100.replace("100x100bb", "600x600bb") : null,
+  };
+}
+
+// SoundCloud ha un oEmbed pubblico ufficiale: titolo, autore (spesso l'artista, ma non
+// sempre - i loro upload personali possono avere nomi account fuorvianti) e copertina.
+async function resolveSoundCloudViaOembed(url) {
+  const { data } = await axios.get("https://soundcloud.com/oembed", {
+    params: { url, format: "json" },
+    timeout: 8000,
+  });
+  if (!data || !data.title) return null;
+  // Molti upload SoundCloud seguono comunque "Artista - Titolo" nel campo title,
+  // stessa convenzione di YouTube: proviamo a separarli.
+  const parsed = parseArtistTitle(data.title);
+  return {
+    title: parsed.title || data.title,
+    artist: parsed.artist || data.author_name || null,
+    cover: data.thumbnail_url || null,
+  };
 }
 
 function decodeHtmlEntities(s) {
@@ -344,6 +385,28 @@ function parseTrackPageTitle(platform, rawTitle) {
 }
 
 async function resolveTrackPageMetadata(url, platform) {
+  // Apple Music: se l'URL contiene l'ID del catalogo iTunes, e' molto piu' affidabile
+  // dello scraping HTML - lo tentiamo per primo.
+  if (platform === "apple_music") {
+    const trackId = extractAppleMusicTrackId(url);
+    if (trackId) {
+      const viaLookup = await resolveAppleMusicViaItunesLookup(trackId).catch((e) => {
+        console.warn("[apple_music:itunes-lookup] fallito:", e.message);
+        return null;
+      });
+      if (viaLookup) return viaLookup;
+    }
+  }
+
+  // SoundCloud: oEmbed ufficiale invece di scraping.
+  if (platform === "soundcloud") {
+    const viaOembed = await resolveSoundCloudViaOembed(url).catch((e) => {
+      console.warn("[soundcloud:oembed] fallito:", e.message);
+      return null;
+    });
+    if (viaOembed) return viaOembed;
+  }
+
   const { data: html } = await axios.get(url, {
     headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
     timeout: 8000,
@@ -365,19 +428,13 @@ async function resolveTrackPageMetadata(url, platform) {
 // Serve una API key gratuita: console.cloud.google.com -> abilita "YouTube Data API v3"
 // -> Credenziali -> crea API key -> impostala su Render come YOUTUBE_API_KEY.
 // Piano gratuito: 10.000 unita'/giorno, una ricerca ne costa 100 -> 100 ricerche/giorno.
-async function searchYouTubeVideoId(query) {
+async function searchYouTubeVideoIdOnce(query) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) {
     throw new Error("YOUTUBE_API_KEY non impostata su Render: impossibile cercare su YouTube senza l'API ufficiale.");
   }
   const { data } = await axios.get("https://www.googleapis.com/youtube/v3/search", {
-    params: {
-      part: "snippet",
-      q: query,
-      type: "video",
-      maxResults: 1,
-      key: apiKey,
-    },
+    params: { part: "snippet", q: query, type: "video", maxResults: 1, key: apiKey },
     timeout: 8000,
   });
   const hit = data.items && data.items[0];
@@ -387,6 +444,27 @@ async function searchYouTubeVideoId(query) {
     title: decodeHtmlEntities(hit.snippet.title),
     channelTitle: hit.snippet.channelTitle,
   };
+}
+
+// Una singola query a volte non trova nulla (titoli con caratteri strani, brani poco
+// noti, ecc.): proviamo piu' varianti, dalla piu' specifica alla piu' generica, e
+// prendiamo il primo risultato utile.
+async function searchYouTubeVideoId(title, artist) {
+  const attempts = [];
+  if (artist && title) attempts.push(`${artist} ${title}`);
+  if (artist && title) attempts.push(`${artist} - ${title} official audio`);
+  if (title) attempts.push(title);
+  if (artist && title) attempts.push(`${title} ${artist}`);
+
+  for (const q of attempts) {
+    try {
+      const hit = await searchYouTubeVideoIdOnce(q);
+      if (hit) return hit;
+    } catch (e) {
+      throw e; // errori reali (quota, key mancante) vanno propagati, non ignorati in loop
+    }
+  }
+  return null;
 }
 
 // --- FALLBACK: YTMDL (usato SOLO dalla route "altri siti" quando yt-dlp fallisce) ---
@@ -450,7 +528,9 @@ async function downloadWithYtmdlFallback(link) {
 // se imposti la env var LASTFM_API_KEY su Render).
 const enrichCache = new Map(); // key: "title|artist|coverHint" -> { data, ts }
 const ENRICH_CACHE_TTL = 1000 * 60 * 60 * 6; // 6 ore
-const MB_USER_AGENT = "ch1noFM/1.0 (webradio tra amici)";
+// Wikipedia/MusicBrainz penalizzano (429) gli User-Agent senza contatti: qui mettiamo
+// l'URL del repo cosi' sanno chi contattare invece di limitarci piu' aggressivamente.
+const MB_USER_AGENT = "ch1noFM/1.0 (webradio tra amici; https://github.com/ch1nell0/ch1noFM)";
 
 function cacheGet(key) {
   const hit = enrichCache.get(key);
@@ -760,9 +840,8 @@ app.post("/download", async (req, res) => {
   if (metadataPlatform) {
     try {
       const meta = await resolveTrackPageMetadata(cleanLink, metadataPlatform);
-      const query = meta.artist ? `${meta.artist} ${meta.title}` : meta.title;
 
-      const ytHit = await searchYouTubeVideoId(query);
+      const ytHit = await searchYouTubeVideoId(meta.title, meta.artist);
       if (!ytHit) throw new Error("Nessun video YouTube corrispondente trovato.");
 
       return res.json({
