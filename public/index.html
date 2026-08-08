@@ -796,6 +796,15 @@
             const audioUrl = data.audio_url || '';
             const isYouTube = audioUrl.startsWith && audioUrl.startsWith('yt:');
 
+            // Ferma SEMPRE entrambe le sorgenti prima di avviare la prossima: senza
+            // questo, passando da un mp3 a un video YouTube (o viceversa) la sorgente
+            // precedente restava viva e si sentivano due canzoni sovrapposte.
+            if (isYouTube) {
+                audioPlayer.pause();
+            } else {
+                try { if (window.ChinoFMYouTube) window.ChinoFMYouTube.stop(); } catch(e){}
+            }
+
             let startOffset = 0;
             if (data.start_time) {
                 startOffset = Math.floor(Math.max(0, (Date.now() - new Date(data.start_time).getTime()) / 1000));
