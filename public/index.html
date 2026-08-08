@@ -189,16 +189,30 @@
         .skip-btn:hover { color: var(--danger); border-color: var(--danger); }
 
         /* ---------- Queue ---------- */
-        .queue-list { list-style: none; display: flex; flex-direction: column; gap: 7px; max-height: 220px; overflow-y: auto; }
+        .queue-list { list-style: none; display: flex; flex-direction: column; gap: 9px; max-height: 320px; overflow-y: auto; }
         .queue-item {
             background: var(--bg-inset); border: 1px solid var(--border-soft);
-            padding: 10px 14px; border-radius: var(--radius-sm);
-            display: flex; align-items: center; gap: 10px; font-size: 0.82rem;
+            padding: 10px 14px; border-radius: var(--radius-md);
+            display: flex; align-items: center; gap: 12px; font-size: 0.84rem;
         }
         .queue-item .idx { color: var(--accent); font-weight: 700; min-width: 22px; }
+        .queue-item .mini-cover { width: 38px; height: 38px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--bg-panel); border: 1px solid var(--border-soft); }
         .queue-item .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
         .queue-item .meta .artist { color: var(--text-faint); }
         .queue-empty { color: var(--text-faint); font-size: 0.8rem; text-align: center; padding: 14px 0; }
+
+        /* ---------- Cronologia (sidebar) ---------- */
+        .history-card {
+            background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-panel-2) 100%);
+            border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 22px;
+        }
+        .mini-track-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; }
+        .mini-track-item { display: flex; align-items: center; gap: 10px; font-size: 0.76rem; }
+        .mini-track-item .mini-cover { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: var(--bg-inset); border: 1px solid var(--border-soft); }
+        .mini-track-item .meta { flex: 1; min-width: 0; overflow: hidden; }
+        .mini-track-item .meta .title-line { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mini-track-item .meta .artist-line { color: var(--text-faint); font-size: 0.68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mini-track-item .when { color: var(--text-faint); font-size: 0.65rem; flex-shrink: 0; }
 
         /* ---------- Request form ---------- */
         .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
@@ -221,6 +235,34 @@
         .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         #status-msg { margin-top: 10px; font-size: 0.78rem; text-align: center; min-height: 1em; }
 
+        /* ---------- Dialog upload locale (titolo + copertina opzionali) ---------- */
+        .upload-details { border-top: 1px dashed var(--border); margin-top: 4px; padding-top: 14px; margin-bottom: 14px; }
+        .cover-choice-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .cover-choice-row input[type="file"] { flex: 1; min-width: 160px; }
+        .cover-gallery-btn {
+            background: var(--bg-inset); border: 1px solid var(--border); color: var(--text-dim);
+            font-family: var(--font-mono); font-size: 0.72rem; padding: 9px 12px; border-radius: var(--radius-sm);
+            cursor: pointer; white-space: nowrap;
+        }
+        .cover-gallery-btn:hover { color: var(--text); border-color: var(--accent); }
+        .placeholder-gallery {
+            display: none; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+            padding: 10px; background: var(--bg-inset); border-radius: var(--radius-sm); border: 1px solid var(--border-soft);
+        }
+        .placeholder-gallery.active { display: flex; }
+        .placeholder-gallery img {
+            width: 44px; height: 44px; border-radius: 8px; object-fit: cover; cursor: pointer;
+            border: 2px solid transparent; transition: border-color 0.15s ease;
+        }
+        .placeholder-gallery img:hover { border-color: var(--accent); }
+        .cover-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+        .cover-preview-row img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border-soft); }
+        .clear-cover-btn {
+            background: none; border: 1px solid var(--border); color: var(--text-faint);
+            font-family: var(--font-mono); font-size: 0.68rem; padding: 5px 9px; border-radius: var(--radius-sm); cursor: pointer;
+        }
+        .clear-cover-btn:hover { color: var(--danger); border-color: var(--danger); }
+
         /* ---------- Artist card ---------- */
         .artist-card { display: flex; flex-direction: column; align-items: center; text-align: center; }
         .artist-photo-wrap {
@@ -229,8 +271,18 @@
         }
         .artist-photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .artist-name { font-family: var(--font-display); font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
-        .artist-bio { font-size: 0.76rem; color: var(--text-dim); line-height: 1.55; text-align: left; }
+        .artist-bio { font-size: 0.76rem; color: var(--text-dim); line-height: 1.55; text-align: left; flex: 1; }
         .artist-bio.is-empty { color: var(--text-faint); font-style: italic; text-align: center; }
+        .bio-row { display: flex; align-items: flex-start; gap: 8px; width: 100%; }
+        .bio-translate-btn {
+            flex-shrink: 0; background: var(--bg-inset); border: 1px solid var(--border-soft);
+            border-radius: var(--radius-sm); width: 26px; height: 26px; display: inline-flex;
+            align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;
+            padding: 0; transition: border-color 0.15s ease, filter 0.15s ease;
+        }
+        .bio-translate-btn:hover { filter: brightness(1.2); }
+        .bio-translate-btn.active { border-color: var(--accent); background: var(--accent-soft); }
+        .bio-translate-btn:disabled { opacity: 0.5; cursor: wait; }
         /* Selettore artisti in stile Spotify: principale + featured, cliccabili per switchare */
         .artist-switcher { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
         .artist-chip {
@@ -328,6 +380,26 @@
                         <label>Carica file audio da PC (MP3, WAV)</label>
                         <input type="file" id="file-input" accept="audio/*">
                     </div>
+
+                    <div class="upload-details" id="upload-details" style="display:none;">
+                        <div class="form-group">
+                            <label>Titolo (opzionale)</label>
+                            <input type="text" id="upload-title-input" placeholder="Nome del brano...">
+                        </div>
+                        <div class="form-group">
+                            <label>Copertina (opzionale)</label>
+                            <div class="cover-choice-row">
+                                <input type="file" id="upload-cover-input" accept="image/*">
+                                <button type="button" class="cover-gallery-btn" id="open-placeholder-gallery-btn">🖼️ Scegli da galleria</button>
+                            </div>
+                            <div class="placeholder-gallery" id="placeholder-gallery"></div>
+                            <div class="cover-preview-row" id="cover-preview-row" style="display:none;">
+                                <img id="cover-preview-img" alt="Copertina scelta">
+                                <button type="button" class="clear-cover-btn" id="clear-cover-btn">✕ rimuovi</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <button class="submit-btn" id="submit-btn" onclick="handleFormSubmit()">Invia in coda</button>
                     <div id="status-msg"></div>
                 </div>
@@ -340,12 +412,23 @@
                         <img id="artist-photo" src="https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB" alt="Artista">
                     </div>
                     <div class="artist-name" id="artist-name">—</div>
-                    <div class="artist-bio is-empty" id="artist-bio">Nessun brano in riproduzione.</div>
+                    <div class="bio-row">
+                        <div class="artist-bio is-empty" id="artist-bio">Nessun brano in riproduzione.</div>
+                        <button class="bio-translate-btn" id="bio-translate-btn" title="Traduci in italiano" style="display:none;">🌐</button>
+                    </div>
                     <div class="artist-switcher" id="artist-switcher"></div>
+                </div>
+
+                <div class="history-card">
+                    <div class="card-label">Ultime canzoni</div>
+                    <ul class="mini-track-list" id="history-list">
+                        <li class="queue-empty">Ancora nessuna canzone suonata.</li>
+                    </ul>
                 </div>
             </div>
         </div>
     </div>
+
 
     <script src="youtube-radio.js"></script>
 
@@ -497,24 +580,85 @@
             .subscribe();
         loadBoard();
 
+        // ================= PLACEHOLDER DI RISERVA (da Supabase) =================
+        let placeholdersCache = [];
+        async function loadPlaceholders() {
+            const { data, error } = await sb.from('placeholders').select('*');
+            if (error) { console.warn('Placeholder non disponibili (tabella creata?):', error.message); return; }
+            placeholdersCache = data || [];
+        }
+        function randomPlaceholder() {
+            if (placeholdersCache.length === 0) return { name: '—', bio: null, image_url: PLACEHOLDER_ARTIST_PHOTO };
+            return placeholdersCache[Math.floor(Math.random() * placeholdersCache.length)];
+        }
+        loadPlaceholders();
+
         // ================= SCHEDA ARTISTA + COVER (via backend /enrich) =================
         // Stile Spotify: artista/i principale/i + featured come schede cliccabili separate.
         let enrichSeq = 0;
         let currentArtists = [];
+        let currentBioOriginal = null;
+        let currentBioTranslated = null;
+        let bioShowingTranslation = false;
         const PLACEHOLDER_ARTIST_PHOTO = 'https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB';
+
+        function setBioText(text, isEmpty) {
+            const bioEl = document.getElementById('artist-bio');
+            bioEl.innerText = text;
+            bioEl.classList.toggle('is-empty', !!isEmpty);
+        }
+
+        function resetBioTranslationState(originalBio) {
+            currentBioOriginal = originalBio || null;
+            currentBioTranslated = null;
+            bioShowingTranslation = false;
+            const btn = document.getElementById('bio-translate-btn');
+            if (btn) btn.style.display = originalBio ? 'inline-flex' : 'none';
+        }
+
+        async function toggleBioTranslation() {
+            if (!currentBioOriginal) return;
+            const btn = document.getElementById('bio-translate-btn');
+            if (bioShowingTranslation) {
+                setBioText(currentBioOriginal, false);
+                bioShowingTranslation = false;
+                btn.classList.remove('active');
+                return;
+            }
+            if (currentBioTranslated) {
+                setBioText(currentBioTranslated, false);
+                bioShowingTranslation = true;
+                btn.classList.add('active');
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const url = `${BACKEND_URL}/translate?text=${encodeURIComponent(currentBioOriginal)}&target=it`;
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+                currentBioTranslated = data.translated;
+                setBioText(currentBioTranslated, false);
+                bioShowingTranslation = true;
+                btn.classList.add('active');
+            } catch (e) {
+                console.warn('Traduzione fallita:', e.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
 
         function showArtist(idx) {
             const a = currentArtists[idx];
             if (!a) return;
             document.getElementById('artist-name').innerText = a.name || '—';
             document.getElementById('artist-photo').src = a.photo || PLACEHOLDER_ARTIST_PHOTO;
-            const bioEl = document.getElementById('artist-bio');
             if (a.bio) {
-                bioEl.innerText = a.bio;
-                bioEl.classList.remove('is-empty');
+                setBioText(a.bio, false);
+                resetBioTranslationState(a.bio);
             } else {
-                bioEl.innerText = 'Nessuna biografia trovata.';
-                bioEl.classList.add('is-empty');
+                setBioText('Nessuna biografia trovata.', true);
+                resetBioTranslationState(null);
             }
             document.querySelectorAll('#artist-switcher .artist-chip').forEach((chip, i) => {
                 chip.classList.toggle('active', i === idx);
@@ -535,16 +679,29 @@
             });
         }
 
+        function showPlaceholderArtist() {
+            const p = randomPlaceholder();
+            currentArtists = [];
+            document.getElementById('artist-switcher').innerHTML = '';
+            document.getElementById('artist-name').innerText = p.name;
+            document.getElementById('artist-photo').src = p.image_url || PLACEHOLDER_ARTIST_PHOTO;
+            if (p.bio) {
+                setBioText(p.bio, false);
+                resetBioTranslationState(null); // sono gia' in italiano, niente da tradurre
+            } else {
+                setBioText('Nessuna informazione trovata.', true);
+                resetBioTranslationState(null);
+            }
+        }
+
         async function loadEnrichment(title, artist, coverHint) {
             const seq = ++enrichSeq;
             const artistNameEl = document.getElementById('artist-name');
-            const artistBioEl = document.getElementById('artist-bio');
             const artistPhotoEl = document.getElementById('artist-photo');
             const songArtistEl = document.getElementById('song-artist');
 
             artistNameEl.innerText = artist || '—';
-            artistBioEl.innerText = 'Cerco informazioni...';
-            artistBioEl.classList.add('is-empty');
+            setBioText('Cerco informazioni...', true);
             artistPhotoEl.src = PLACEHOLDER_ARTIST_PHOTO;
             document.getElementById('artist-switcher').innerHTML = '';
             if (coverHint) document.getElementById('album-cover').src = coverHint;
@@ -563,23 +720,20 @@
                 if (artists.length > 0) {
                     renderArtistSwitcher(artists);
                     showArtist(0);
-                    // L'artista principale "vero" (trovato via iTunes/Deezer/MusicBrainz)
-                    // sostituisce eventuali nomi di canali freebooter mostrati inizialmente.
                     const primaryNames = artists.filter(a => a.role === 'primary').map(a => a.name).join(' & ');
                     if (primaryNames) songArtistEl.innerText = primaryNames;
                 } else {
-                    artistBioEl.innerText = 'Nessuna informazione trovata.';
-                    artistBioEl.classList.add('is-empty');
+                    showPlaceholderArtist();
                 }
             } catch (e) {
                 console.warn('Enrichment fallito:', e.message);
                 if (seq !== enrichSeq) return;
-                artistBioEl.innerText = 'Info non disponibili al momento.';
-                artistBioEl.classList.add('is-empty');
+                showPlaceholderArtist();
             }
         }
 
         // --- Helper: normalize/extract YouTube ID from many link forms ---
+
         function getYouTubeIdFromAny(url) {
           if (!url || typeof url !== 'string') return null;
           const s = url.trim();
@@ -587,6 +741,8 @@
           const m = s.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
           return m ? m[1] : null;
         }
+
+        document.getElementById('bio-translate-btn').addEventListener('click', toggleBioTranslation);
 
         document.getElementById('enable-audio-btn').addEventListener('click', () => {
             const player = document.getElementById('radio-player');
@@ -637,6 +793,66 @@
             return fetchJson(`${BACKEND_URL}/upload`, { method: "POST", body: formData });
         }
 
+        async function requestImageUpload(file) {
+            const formData = new FormData();
+            formData.append("file", file);
+            return fetchJson(`${BACKEND_URL}/upload-image`, { method: "POST", body: formData });
+        }
+
+        // ================= DIALOG UPLOAD LOCALE (titolo + copertina opzionali) =================
+        let chosenCoverUrl = null; // può arrivare da upload o da galleria placeholder
+
+        function showCoverPreview(url) {
+            chosenCoverUrl = url;
+            document.getElementById('cover-preview-img').src = url;
+            document.getElementById('cover-preview-row').style.display = 'flex';
+            document.getElementById('placeholder-gallery').classList.remove('active');
+        }
+
+        document.getElementById('file-input').addEventListener('change', () => {
+            const file = document.getElementById('file-input').files[0];
+            const details = document.getElementById('upload-details');
+            if (!file) { details.style.display = 'none'; return; }
+            details.style.display = 'block';
+            const nameNoExt = file.name.replace(/\.[^/.]+$/, '');
+            document.getElementById('upload-title-input').placeholder = nameNoExt;
+        });
+
+        document.getElementById('upload-cover-input').addEventListener('change', () => {
+            const file = document.getElementById('upload-cover-input').files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => showCoverPreview(reader.result); // anteprima locale, upload vero avviene al submit
+            reader.readAsDataURL(file);
+        });
+
+        document.getElementById('open-placeholder-gallery-btn').addEventListener('click', () => {
+            const gallery = document.getElementById('placeholder-gallery');
+            if (gallery.classList.contains('active')) { gallery.classList.remove('active'); return; }
+            gallery.innerHTML = placeholdersCache.map(p =>
+                `<img src="${p.image_url}" alt="${escapeHtml(p.name)}" title="${escapeHtml(p.name)}" data-url="${p.image_url}">`
+            ).join('');
+            gallery.querySelectorAll('img').forEach(img => {
+                img.addEventListener('click', () => showCoverPreview(img.dataset.url));
+            });
+            gallery.classList.add('active');
+        });
+
+        document.getElementById('clear-cover-btn').addEventListener('click', () => {
+            chosenCoverUrl = null;
+            document.getElementById('upload-cover-input').value = '';
+            document.getElementById('cover-preview-row').style.display = 'none';
+        });
+
+        function resetUploadDialog() {
+            document.getElementById('upload-details').style.display = 'none';
+            document.getElementById('upload-title-input').value = '';
+            document.getElementById('upload-cover-input').value = '';
+            document.getElementById('placeholder-gallery').classList.remove('active');
+            document.getElementById('cover-preview-row').style.display = 'none';
+            chosenCoverUrl = null;
+        }
+
         async function handleFormSubmit() {
             const statusMsg = document.getElementById("status-msg");
             const submitBtn = document.getElementById("submit-btn");
@@ -662,8 +878,28 @@
                     const result = await requestUpload(file);
                     songData.type = "file";
                     songData.audioUrl = result.audioUrl;
-                    songData.title = result.title;
+
+                    // Titolo custom (se l'utente l'ha scritto), altrimenti quello del file.
+                    const customTitle = document.getElementById('upload-title-input').value.trim();
+                    songData.title = customTitle || result.title;
                     songData.artist = result.artist;
+
+                    // Copertina: file caricato dall'utente > scelta dalla galleria > placeholder casuale.
+                    const customCoverFile = document.getElementById('upload-cover-input').files[0];
+                    if (customCoverFile) {
+                        statusMsg.innerText = "⏫ Caricamento copertina...";
+                        try {
+                            const imgResult = await requestImageUpload(customCoverFile);
+                            songData.coverHint = imgResult.url;
+                        } catch (imgErr) {
+                            console.warn('Upload copertina fallito, uso placeholder:', imgErr.message);
+                            songData.coverHint = randomPlaceholder().image_url;
+                        }
+                    } else if (chosenCoverUrl) {
+                        songData.coverHint = chosenCoverUrl; // immagine da galleria placeholder, già un URL
+                    } else {
+                        songData.coverHint = randomPlaceholder().image_url;
+                    }
                 } else if (link) {
                     statusMsg.innerText = "⏬ Elaborazione link...";
                     const result = await requestDownload(link);
@@ -707,6 +943,7 @@
                 statusMsg.innerText = "✅ Inserito in coda!";
                 document.getElementById("song-link").value = "";
                 fileInput.value = "";
+                resetUploadDialog();
                 forceCheckQueue();
             } catch (err) {
                 console.error(err);
@@ -718,6 +955,8 @@
         }
 
         // --- CODA ---
+        const GENERIC_COVER_ICON = 'https://via.placeholder.com/64/181c24/565c6a?text=%E2%99%AB';
+
         function renderQueue(items) {
             const queueListEl = document.getElementById("queue-list");
             if (!items || items.length === 0) {
@@ -728,13 +967,57 @@
                 .map((item, index) => {
                     const isYouTube = item.audio_url && item.audio_url.startsWith && item.audio_url.startsWith('yt:');
                     const displayTitle = item.title || (isYouTube ? (`YouTube ${item.audio_url ? item.audio_url.slice(3) : ''}`) : 'Traccia');
-                    const badge = isYouTube ? '🎬' : '🎵';
-                    return `<li class="queue-item"><span class="idx">${String(index + 1).padStart(2, '0')}</span><span>${badge}</span><span class="meta">${escapeHtml(displayTitle)} <span class="artist">— ${escapeHtml(item.artist || '')}</span></span></li>`;
+                    const cover = item.cover_hint || GENERIC_COVER_ICON;
+                    return `<li class="queue-item"><span class="idx">${String(index + 1).padStart(2, '0')}</span><img class="mini-cover" src="${cover}" alt=""><span class="meta">${escapeHtml(displayTitle)} <span class="artist">— ${escapeHtml(item.artist || '')}</span></span></li>`;
                 })
                 .join("");
         }
 
         function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+        // ================= CRONOLOGIA (sidebar) =================
+        function formatRelativeTime(dateStr) {
+            const diffMs = Date.now() - new Date(dateStr).getTime();
+            const mins = Math.floor(diffMs / 60000);
+            if (mins < 1) return 'ora';
+            if (mins < 60) return `${mins} min fa`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `${hours}h fa`;
+            const days = Math.floor(hours / 24);
+            return `${days}g fa`;
+        }
+
+        function renderHistory(items) {
+            const el = document.getElementById('history-list');
+            if (!items || items.length === 0) {
+                el.innerHTML = '<li class="queue-empty">Ancora nessuna canzone suonata.</li>';
+                return;
+            }
+            // La più recente in alto (ordine già decrescente dalla query).
+            el.innerHTML = items.map((item) => {
+                const cover = item.cover_hint || GENERIC_COVER_ICON;
+                return `<li class="mini-track-item">
+                    <img class="mini-cover" src="${cover}" alt="">
+                    <span class="meta">
+                        <div class="title-line">${escapeHtml(item.title || 'Traccia')}</div>
+                        <div class="artist-line">${escapeHtml(item.artist || '')}</div>
+                    </span>
+                    <span class="when">${formatRelativeTime(item.played_at)}</span>
+                </li>`;
+            }).join('');
+        }
+
+        async function loadHistory() {
+            const { data, error } = await sb.from('history').select('*').order('played_at', { ascending: false }).limit(8);
+            if (error) { console.warn('Cronologia non disponibile (tabella "history" creata?):', error.message); return; }
+            renderHistory(data);
+        }
+
+        sb.channel('history-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'history' }, loadHistory)
+            .subscribe();
+        loadHistory();
+        setInterval(() => loadHistory(), 60000); // ricalcola i "X min fa" ogni minuto
 
         async function loadQueue() {
             const { data, error } = await sb.from("queue").select("*").order("created_at", { ascending: true });
@@ -775,12 +1058,9 @@
                 document.getElementById('song-title').innerText = "In attesa di brani...";
                 document.getElementById('song-artist').innerText = "Radio online";
                 document.getElementById('requested-by').innerText = "—";
-                document.getElementById('artist-name').innerText = "—";
-                document.getElementById('artist-bio').innerText = "Nessun brano in riproduzione.";
-                document.getElementById('artist-bio').classList.add('is-empty');
-                document.getElementById('artist-photo').src = "https://via.placeholder.com/300/12151b/565c6a?text=%E2%99%AB";
                 document.getElementById('artist-switcher').innerHTML = '';
                 currentArtists = [];
+                showPlaceholderArtist(); // niente più sidebar vuota, sempre un volto anche a riposo
                 buildWaveform('idle');
                 updateWaveformProgress(0, 0);
                 return;
@@ -847,6 +1127,20 @@
         }
 
         async function advanceQueue() {
+            // Logga nella cronologia il brano che sta per essere sostituito, prima
+            // di sovrascriverlo (se ce n'era uno in riproduzione).
+            const { data: outgoing } = await sb.from("radio_state").select("*").eq("id", "current").maybeSingle();
+            if (outgoing && outgoing.title) {
+                sb.from("history").insert({
+                    title: outgoing.title,
+                    artist: outgoing.artist,
+                    cover_hint: outgoing.cover_hint || null,
+                    requested_by: outgoing.requested_by,
+                }).then(({ error }) => {
+                    if (error) console.warn('Impossibile salvare in cronologia:', error.message);
+                });
+            }
+
             const { data: nextSongs, error: fetchError } = await sb
                 .from("queue").select("*").order("created_at", { ascending: true }).limit(1);
             if (fetchError) { console.error("Errore lettura coda:", fetchError.message); return; }
