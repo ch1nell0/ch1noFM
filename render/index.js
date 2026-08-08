@@ -247,6 +247,14 @@ function parseArtistTitle(rawTitle) {
 }
 
 // --- METADATI YOUTUBE VIA OEMBED (endpoint pubblico ufficiale, no scraping) ---
+function stripTopicSuffix(name) {
+  if (!name) return name;
+  // I canali "Artista - Topic" generati automaticamente da YouTube per gli artisti
+  // ufficiali NON vanno trattati come nome canale/uploader generico: il testo prima
+  // di " - Topic" e' proprio il nome dell'artista, quindi lo teniamo pulito.
+  return name.replace(/\s*-\s*Topic\s*$/i, "").trim();
+}
+
 async function getYouTubeMeta(videoId, originalUrl) {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
     `https://www.youtube.com/watch?v=${videoId}`
@@ -255,7 +263,7 @@ async function getYouTubeMeta(videoId, originalUrl) {
   try {
     const res = await axios.get(oembedUrl, { timeout: 8000 });
     const rawTitle = res.data.title || "YouTube Track";
-    const channelName = res.data.author_name || "YouTube";
+    const channelName = stripTopicSuffix(res.data.author_name || "YouTube");
     const parsed = parseArtistTitle(rawTitle);
 
     return {
@@ -442,7 +450,7 @@ async function searchYouTubeVideoIdOnce(query) {
   return {
     videoId: hit.id.videoId,
     title: decodeHtmlEntities(hit.snippet.title),
-    channelTitle: hit.snippet.channelTitle,
+    channelTitle: stripTopicSuffix(hit.snippet.channelTitle),
   };
 }
 
@@ -742,6 +750,36 @@ async function findArtistInfo(artist) {
   return result;
 }
 
+// --- TRADUZIONE BIO ARTISTA (MyMemory, gratuita e senza API key) ---
+// Limite gentile: ~500 caratteri a richiesta, ~5000/giorno anonimi. Per un uso
+// personale tra amici e' piu' che sufficiente; tronchiamo se la bio e' molto lunga.
+const translateCache = new Map(); // key: "lang|text" -> translated
+app.get("/translate", async (req, res) => {
+  const text = (req.query.text || "").toString().trim();
+  const target = (req.query.target || "it").toString().trim();
+  if (!text) return res.status(400).json({ error: "text mancante." });
+
+  const cacheKey = `${target}|${text.slice(0, 200)}`;
+  if (translateCache.has(cacheKey)) return res.json({ translated: translateCache.get(cacheKey) });
+
+  const truncated = text.length > 490 ? text.slice(0, 490) + "…" : text;
+
+  try {
+    const { data } = await axios.get("https://api.mymemory.translated.net/get", {
+      params: { q: truncated, langpair: `en|${target}` },
+      timeout: 8000,
+    });
+    const translated = data && data.responseData && data.responseData.translatedText;
+    if (!translated) throw new Error("Risposta di traduzione vuota.");
+    translateCache.set(cacheKey, translated);
+    if (translateCache.size > 300) translateCache.delete(translateCache.keys().next().value);
+    res.json({ translated });
+  } catch (err) {
+    console.error("[Errore /translate]:", err.message);
+    res.status(500).json({ error: "Traduzione fallita: " + err.message });
+  }
+});
+
 app.get("/enrich", async (req, res) => {
   const title = (req.query.title || "").toString().trim();
   const artist = (req.query.artist || "").toString().trim();
@@ -927,6 +965,22 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: "Upload fallito: " + err.message });
+  }
+});
+
+// --- UPLOAD IMMAGINE DI COPERTINA (dialog upload locale, cover personalizzata) ---
+const uploadImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+});
+app.post("/upload-image", uploadImage.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Nessuna immagine ricevuta." });
+  try {
+    const safeName = `${Date.now()}_cover_${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const url = await uploadAudio(req.file.buffer, safeName); // funziona per qualunque binario, non solo audio
+    res.json({ url });
+  } catch (err) {
+    res.status(500).json({ error: "Upload immagine fallito: " + err.message });
   }
 });
 
